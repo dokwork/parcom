@@ -23,7 +23,335 @@
 //! This is the simple library provided an implementation of the parser combinators.
 const std = @import("std");
 
-const log = std.log.scoped(.parsec);
+const log = std.log.scoped(.parcom);
+
+pub const Parsers = struct {
+    pub fn successfull(result: anytype) Parser(Successfull(@TypeOf(result))) {
+        return .{ .underlying = .{ .result = result } };
+    }
+
+    pub inline fn anyChar() Parser(AnyChar) {
+        return .{ .implementation = .{} };
+    }
+
+    test "Parse anyChar example" {
+        try std.testing.expectEqual('a', try Parsers.anyChar().parseString(std.testing.allocator, "a"));
+        try std.testing.expectEqual(null, try Parsers.anyChar().parseString(std.testing.allocator, ""));
+    }
+
+    pub fn char(comptime C: u8) Parser(Const(AnyChar, C)) {
+        return .{ .implementation = .{ .underlying = AnyChar{} } };
+    }
+
+    test "Parse char example" {
+        const p = Parsers.char('a');
+        try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "a"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "b"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
+    }
+
+    pub inline fn oneCharOf(comptime chars: []const u8) Parser(OneCharOf(chars)) {
+        return .{ .implementation = .{} };
+    }
+
+    test "Parse one of chars" {
+        const p = Parsers.oneCharOf("ab");
+
+        try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "a"));
+        try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
+    }
+
+    pub inline fn int(comptime T: type) Parser(Int(T, 128)) {
+        return .{ .implementation = .{} };
+    }
+
+    test "Parse int example" {
+        const p = Parsers.int(i8);
+        const alloc = std.testing.allocator;
+        try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
+        try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
+        try std.testing.expectEqual(-2, try p.parseString(alloc, "-2"));
+        try std.testing.expectEqual(null, try p.parseString(alloc, "+-2"));
+        try std.testing.expectEqual(2, try p.parseString(alloc, "0002"));
+        try std.testing.expectEqual(2, try p.parseString(alloc, "0_0_0_2"));
+        try std.testing.expectEqual(2, try p.parseString(alloc, "0b10"));
+        try std.testing.expectEqual(2, try p.parseString(alloc, "+0b10"));
+        try std.testing.expectEqual(-2, try p.parseString(alloc, "-0b10"));
+        try std.testing.expectEqual(8, try p.parseString(alloc, "0o10"));
+        try std.testing.expectEqual(10, try p.parseString(alloc, "0XA"));
+    }
+
+    pub inline fn letterOrNumber() Parser(Conditional("Letter or number", AnyChar, void)) {
+        return .{
+            .implementation = .{ .underlying = AnyChar{}, .context = {}, .conditionFn = struct {
+                fn isLetterOrNumber(_: void, value: u8) bool {
+                    return switch (value) {
+                        'a'...'z' => true,
+                        'A'...'Z' => true,
+                        '0'...'9' => true,
+                        else => false,
+                    };
+                }
+            }.isLetterOrNumber },
+        };
+    }
+
+    test "Parse letterOrNumber example" {
+        const p = Parsers.letterOrNumber();
+        try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
+        try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
+        try std.testing.expectEqual('1', try p.parseString(std.testing.allocator, "1"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "-"));
+    }
+
+    pub inline fn word(comptime W: []const u8) Parser(Conditional(WordLabel(W), Array(AnyChar, W.len), []const u8)) {
+        return .{
+            .implementation = .{
+                .underlying = Array(AnyChar, W.len){ .underlying = AnyChar{} },
+                .context = W,
+                .conditionFn = struct {
+                    fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
+                        return std.mem.eql(u8, expected, &parsed);
+                    }
+                }.compareWords,
+            },
+        };
+    }
+
+    test "Parse word example" {
+        try std.testing.expectEqualStrings("foo", &((try word("foo").parseString(std.testing.allocator, "foo")).?));
+    }
+
+    pub inline fn range(comptime From: u8, To: u8) Parser(Conditional(RangeLabel(From, To), AnyChar, void)) {
+        comptime {
+            std.debug.assert(From < To);
+        }
+        return .{
+            .implementation = .{
+                .underlying = AnyChar{},
+                .context = {},
+                .conditionFn = struct {
+                    fn isInRange(_: void, value: u8) bool {
+                        return From <= value and value <= To;
+                    }
+                }.isInRange,
+            },
+        };
+    }
+
+    test "Parse range example" {
+        const p = Parsers.range('A', 'C');
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "a"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "b"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
+        try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "D"));
+        try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
+        try std.testing.expectEqual('B', try p.parseString(std.testing.allocator, "B"));
+        try std.testing.expectEqual('C', try p.parseString(std.testing.allocator, "C"));
+    }
+
+    pub inline fn tuple(parsers: anytype) Parser(Tuple(@TypeOf(parsers))) {
+        return .{ .implementation = .{ .parsers = parsers } };
+    }
+
+    test "Parse tuple example" {
+        const p = Parsers.tuple(.{ Parsers.char('a'), Parsers.char('b'), Parsers.char('c') });
+        try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
+    }
+};
+
+pub fn Parser(comptime Implementation: type) type {
+    return struct {
+        const ResultType = Implementation.ResultType;
+
+        const Self = @This();
+
+        implementation: Implementation,
+
+        /// It runs this parser to parse an input from the `reader`. The whole input
+        /// will be persisted in the inner buffer during the parsing. The allocator is
+        /// used to allocate memory for inner buffer.
+        pub fn parse(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
+            var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader.any() };
+            defer cursor.buffer.deinit();
+            return try self.implementation.parse(&cursor);
+        }
+
+        /// It creates an fixed buffer stream from the passed string to build the
+        /// reader, and then invokes the `parse` method with it reader.
+        pub inline fn parseString(
+            self: Self,
+            alloc: std.mem.Allocator,
+            str: []const u8,
+        ) !?ResultType {
+            var fbs = std.io.fixedBufferStream(str);
+            return self.parse(alloc, fbs.reader());
+        }
+
+        pub inline fn andThen(
+            self: Self,
+            other: anytype,
+        ) Parser(AndThen(@TypeOf(self.implementation), @TypeOf(other.implementation))) {
+            return .{ .implementation = .{ .left = self.implementation, .right = other.implementation } };
+        }
+
+        test "andThen example" {
+            const p = Parsers.char('a').andThen(Parsers.char('b'));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
+            try std.testing.expectEqual(.{ 'a', 'b' }, try p.parseString(std.testing.allocator, "ab"));
+        }
+
+        pub inline fn orElse(
+            self: Self,
+            right: anytype,
+        ) Parser(OrElse(@TypeOf(self.implementation), @TypeOf(right.implementation))) {
+            return .{ .implementation = .{ .left = self.implementation, .right = right.implementation } };
+        }
+
+        test "orElse example" {
+            const p = Parsers.char('a').orElse(Parsers.char('b'));
+
+            try std.testing.expectEqual(Either(u8, u8){ .left = 'a' }, try p.parseString(std.testing.allocator, "a"));
+            try std.testing.expectEqual(Either(u8, u8){ .right = 'b' }, try p.parseString(std.testing.allocator, "b"));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
+        }
+
+        pub inline fn optional(self: Self) Parser(OrElse(@TypeOf(self.implementation), Successfull(void))) {
+            return .{
+                .implementation = OrElse(@TypeOf(self.implementation), Successfull(void)){
+                    .left = self.implementation,
+                    .right = Successfull(void){ .result = {} },
+                },
+            };
+        }
+
+        test "optional example" {
+            const p = Parsers.char('a').optional();
+            try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, p.parseString(std.testing.allocator, "a"));
+            try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString(std.testing.allocator, "b"));
+        }
+
+        pub inline fn suchThat(
+            self: Self,
+            context: anytype,
+            condition: *const fn (ctx: @TypeOf(context), value: @TypeOf(self).ResultType) bool,
+        ) Parser(Conditional("Such that", @TypeOf(self), @TypeOf(context))) {
+            return .{ .implementation = .{ .underlying = self.implementation, .context = context, .conditionFn = condition } };
+        }
+
+        pub inline fn suchThatLabeled(
+            self: Self,
+            comptime label: []const u8,
+            context: anytype,
+            condition: *const fn (ctx: @TypeOf(context), value: @TypeOf(self).ResultType) bool,
+        ) Parser(Conditional(label, @TypeOf(self), @TypeOf(context))) {
+            return .{ .implementation = .{ .underlying = self.implementation, .context = context, .conditionFn = condition } };
+        }
+
+        pub inline fn repeatToArray(self: Self, comptime count: u8) Parser(Array(@TypeOf(self.implementation), count)) {
+            return .{ .implementation = .{ .underlying = self.implementation } };
+        }
+
+        test "repeatToArray example" {
+            const p = Parsers.char('a').repeatToArray(2);
+
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "ab"));
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'a' },
+                &((try p.parseString(std.testing.allocator, "aa")).?),
+            );
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'a' },
+                &((try p.parseString(std.testing.allocator, "aaa")).?),
+            );
+        }
+
+        pub inline fn repeatToBuffer(self: Self, buffer: []u8) Parser(Buffer(@TypeOf(self.implementation))) {
+            return .{ .implementation = .{ .underlying = self.implementation, .buffer = buffer } };
+        }
+
+        test "repeatToBuffer example" {
+            var buf: [5]u8 = undefined;
+            const p = Parsers.char('a').repeatToBuffer(&buf);
+
+            try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(std.testing.allocator, "")).?);
+            try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try p.parseString(std.testing.allocator, "a")).?);
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'a' },
+                (try p.parseString(std.testing.allocator, "aa")).?,
+            );
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'a' },
+                (try p.parseString(std.testing.allocator, "aab")).?,
+            );
+        }
+
+        pub inline fn repeat(
+            self: Self,
+            comptime Collector: type,
+            collector: *Collector,
+            addFn: *const fn (ctx: *Collector, ResultType) anyerror!void,
+        ) Parser(Collect(@TypeOf(self.implementation), Collector)) {
+            return .{ .implementation = .{ .underlying = self.implementation, .collector = collector, .addFn = addFn } };
+        }
+
+        pub inline fn repeatToList(
+            self: Self,
+            list: *std.ArrayList(ResultType),
+        ) Parser(Collect(@TypeOf(self.implementation), std.ArrayList(ResultType))) {
+            return .{
+                .implementation = Collect(@TypeOf(self.implementation), std.ArrayList(ResultType)){
+                    .underlying = self.implementation,
+                    .collector = list,
+                    .addFn = std.ArrayList(ResultType).append,
+                },
+            };
+        }
+
+        test "repeateToList example" {
+            var list = std.ArrayList(u8).init(std.testing.allocator);
+            defer list.deinit();
+
+            const p = Parsers.anyChar().repeatToList(&list);
+
+            try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(std.testing.allocator, "")).?.items);
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'b', 'c' },
+                (try p.parseString(std.testing.allocator, "abc")).?.items,
+            );
+        }
+
+        pub inline fn transform(
+            self: Self,
+            comptime Result: type,
+            f: *const fn (a: ResultType) anyerror!Result,
+        ) Parser(Transform(@TypeOf(self.implementation), Result)) {
+            return .{ .implementation = .{ .underlying = self.implementation, .mapFn = f } };
+        }
+
+        test "Transform the parsed result" {
+            const p = Parsers.anyChar().repeatToArray(2).transform(u8, struct {
+                fn parseInt(arr: [2]u8) anyerror!u8 {
+                    return try std.fmt.parseInt(u8, &arr, 10);
+                }
+            }.parseInt);
+
+            try std.testing.expectEqual(42, try p.parseString(std.testing.allocator, "42"));
+        }
+    };
+}
+
+pub fn Either(comptime A: type, B: type) type {
+    return union(enum) { left: A, right: B };
+}
 
 /// Keeps buffer of the read parsed bytes, and index of the last not parsed
 /// element in it.
@@ -59,34 +387,22 @@ const Cursor = struct {
     }
 };
 
-/// It runs the `parser` to parse an input from the `reader`. The whole input
-/// will be persisted in the inner buffer during the parsing. The allocator is
-/// used to allocate memory for inner buffer.
-pub fn parse(alloc: std.mem.Allocator, parser: anytype, reader: anytype) !?@TypeOf(parser).ResultType {
-    var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader.any() };
-    defer cursor.buffer.deinit();
-    return try parser.parse(&cursor);
+fn WordLabel(comptime w: []const u8) *const [std.fmt.comptimePrint("Word {any}", .{w}).len:0]u8 {
+    return std.fmt.comptimePrint("Word {any}", .{w});
 }
 
-/// It creates an fixed buffer stream from the passed string to build the
-/// reader, and then invokes the `parse` method with it reader.
-pub inline fn parseStr(alloc: std.mem.Allocator, parser: anytype, str: []const u8) !?@TypeOf(parser).ResultType {
-    var fbs = std.io.fixedBufferStream(str);
-    return parse(alloc, parser, fbs.reader());
-}
-
-pub fn successfull(result: anytype) Successfull(@TypeOf(result)) {
-    return .{ .result = result };
+fn RangeLabel(
+    comptime From: u8,
+    To: u8,
+) *const [std.fmt.comptimePrint("Range of char from {c} to {c}", .{ From, To }).len:0]u8 {
+    return std.fmt.comptimePrint("Range of char from {c} to {c}", .{ From, To });
 }
 
 fn Successfull(comptime T: type) type {
     return struct {
         pub const ResultType = T;
-        const Self = @This();
-
         result: ResultType,
-
-        pub fn parse(self: Self, _: *Cursor) anyerror!?ResultType {
+        pub fn parse(self: @This(), _: *Cursor) anyerror!?ResultType {
             return self.result;
         }
     };
@@ -101,14 +417,10 @@ fn Failed(comptime T: type) type {
     };
 }
 
-pub inline fn anyChar() AnyCharParser {
-    return AnyCharParser{};
-}
-
-const AnyCharParser = struct {
+const AnyChar = struct {
     pub const ResultType = u8;
 
-    pub fn parse(_: AnyCharParser, cursor: *Cursor) anyerror!?u8 {
+    pub fn parse(_: AnyChar, cursor: *Cursor) anyerror!?u8 {
         if (cursor.idx < cursor.buffer.items.len and cursor.buffer.items[cursor.idx..].len > 0) {
             cursor.idx += 1;
             return cursor.buffer.items[cursor.idx - 1];
@@ -125,26 +437,12 @@ const AnyCharParser = struct {
         }
     }
 
-    pub fn format(_: AnyCharParser, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try writer.writeAll("<any char>");
     }
 };
 
-test "Parse AnyChar" {
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, anyChar(), ""));
-    try std.testing.expectEqual('a', try parseStr(std.testing.allocator, anyChar(), "a"));
-}
-
-pub inline fn conditional(
-    comptime Label: []const u8,
-    parser: anytype,
-    context: anytype,
-    condition: *const fn (ctx: @TypeOf(context), value: @TypeOf(parser).ResultType) bool,
-) ConditionalParser(Label, @TypeOf(parser), @TypeOf(context)) {
-    return .{ .underlying = parser, .context = context, .conditionFn = condition };
-}
-
-fn ConditionalParser(comptime Label: []const u8, Underlying: type, Context: type) type {
+fn Conditional(comptime Label: []const u8, Underlying: type, Context: type) type {
     return struct {
         const Self = @This();
 
@@ -174,78 +472,7 @@ fn ConditionalParser(comptime Label: []const u8, Underlying: type, Context: type
     };
 }
 
-pub inline fn word(comptime W: []const u8) ConditionalParser(labelWord(W), ArrayParser(AnyCharParser, W.len), []const u8) {
-    return conditional(labelWord(W), array(anyChar(), W.len), W, struct {
-        fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
-            return std.mem.eql(u8, expected, &parsed);
-        }
-    }.compareWords);
-}
-fn labelWord(comptime w: []const u8) *const [std.fmt.comptimePrint("Word {any}", .{w}).len:0]u8 {
-    return std.fmt.comptimePrint("Word {any}", .{w});
-}
-
-test "Parse constant word" {
-    try std.testing.expectEqualStrings("foo", &((try parseStr(std.testing.allocator, word("foo"), "foo")).?));
-}
-
-pub inline fn range(comptime From: u8, To: u8) ConditionalParser(labelRange(From, To), AnyCharParser, void) {
-    comptime {
-        std.debug.assert(From < To);
-    }
-    return conditional(labelRange(From, To), anyChar(), {}, struct {
-        fn isInRange(_: void, value: u8) bool {
-            return From <= value and value <= To;
-        }
-    }.isInRange);
-}
-fn labelRange(
-    comptime From: u8,
-    To: u8,
-) *const [std.fmt.comptimePrint("Range of char from {c} to {c}", .{ From, To }).len:0]u8 {
-    return std.fmt.comptimePrint("Range of char from {c} to {c}", .{ From, To });
-}
-
-test "Parse char in range" {
-    const p = range('A', 'C');
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "a"));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "b"));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "c"));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "D"));
-    try std.testing.expectEqual('A', try parseStr(std.testing.allocator, p, "A"));
-    try std.testing.expectEqual('B', try parseStr(std.testing.allocator, p, "B"));
-    try std.testing.expectEqual('C', try parseStr(std.testing.allocator, p, "C"));
-}
-
-pub inline fn letterOrNumber() ConditionalParser("Letter or number", AnyCharParser, void) {
-    return conditional("Letter or number", anyChar(), {}, struct {
-        fn isLetterOrNumber(_: void, value: u8) bool {
-            return switch (value) {
-                'a'...'z' => true,
-                'A'...'Z' => true,
-                '0'...'9' => true,
-                else => false,
-            };
-        }
-    }.isLetterOrNumber);
-}
-
-test "Parse letters and numbers" {
-    const p = letterOrNumber();
-    try std.testing.expectEqual('b', try parseStr(std.testing.allocator, p, "b"));
-    try std.testing.expectEqual('A', try parseStr(std.testing.allocator, p, "A"));
-    try std.testing.expectEqual('1', try parseStr(std.testing.allocator, p, "1"));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "-"));
-}
-
-pub inline fn constant(
-    parser: anytype,
-    comptime template: @TypeOf(parser).ResultType,
-) ConstParser(@TypeOf(parser), template) {
-    return .{ .underlying = parser };
-}
-
-fn ConstParser(comptime Underlying: type, comptime template: Underlying.ResultType) type {
+fn Const(comptime Underlying: type, comptime template: Underlying.ResultType) type {
     return struct {
         const Self = @This();
 
@@ -272,21 +499,7 @@ fn ConstParser(comptime Underlying: type, comptime template: Underlying.ResultTy
     };
 }
 
-pub fn char(comptime C: u8) ConstParser(AnyCharParser, C) {
-    return constant(anyChar(), C);
-}
-
-test "Parse constant char" {
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, char('a'), ""));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, char('a'), "b"));
-    try std.testing.expectEqual('a', try parseStr(std.testing.allocator, char('a'), "a"));
-}
-
-pub inline fn slice(parser: anytype, buffer: []u8) SliceParser(@TypeOf(parser)) {
-    return .{ .underlying = parser, .buffer = buffer };
-}
-
-fn SliceParser(comptime Underlying: type) type {
+fn Buffer(comptime Underlying: type) type {
     return struct {
         const Self = @This();
 
@@ -309,21 +522,7 @@ fn SliceParser(comptime Underlying: type) type {
     };
 }
 
-test "Parse slice of chars" {
-    var buf: [5]u8 = undefined;
-    const p = slice(char('a'), &buf);
-
-    try std.testing.expectEqualSlices(u8, &[_]u8{}, (try parseStr(std.testing.allocator, p, "")).?);
-    try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try parseStr(std.testing.allocator, p, "a")).?);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try parseStr(std.testing.allocator, p, "aa")).?);
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try parseStr(std.testing.allocator, p, "aab")).?);
-}
-
-pub inline fn array(parser: anytype, comptime count: u8) ArrayParser(@TypeOf(parser), count) {
-    return .{ .underlying = parser };
-}
-
-fn ArrayParser(comptime Underlying: type, count: u8) type {
+fn Array(comptime Underlying: type, count: u8) type {
     return struct {
         const Self = @This();
 
@@ -355,25 +554,7 @@ fn ArrayParser(comptime Underlying: type, count: u8) type {
     };
 }
 
-test "Parse array of chars" {
-    const p = array(char('a'), 2);
-
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, ""));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "ab"));
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, &((try parseStr(std.testing.allocator, p, "aa")).?));
-    try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, &((try parseStr(std.testing.allocator, p, "aaa")).?));
-}
-
-pub inline fn collect(
-    comptime Collector: type,
-    parser: anytype,
-    collector: *Collector,
-    append: *const fn (ctx: *Collector, @TypeOf(parser).ResultType) anyerror!void,
-) CollectorParser(@TypeOf(parser), Collector) {
-    return .{ .underlying = parser, .collector = collector, .appendFn = append };
-}
-
-fn CollectorParser(comptime Underlying: type, Collector: type) type {
+fn Collect(comptime Underlying: type, Collector: type) type {
     return struct {
         const Self = @This();
 
@@ -381,52 +562,91 @@ fn CollectorParser(comptime Underlying: type, Collector: type) type {
 
         underlying: Underlying,
         collector: *Collector,
-        appendFn: *const fn (ctx: *Collector, Underlying.ResultType) anyerror!void,
+        addFn: *const fn (ctx: *Collector, Underlying.ResultType) anyerror!void,
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
             while (try self.underlying.parse(cursor)) |t| {
-                try self.appendFn(self.collector, t);
+                try self.addFn(self.collector, t);
             }
             return self.collector;
         }
 
         pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.print("<collect {any} to {any}>", .{ @typeName(Collector), self.underlying });
+            try writer.print("<Collect {any} to {any}>", .{ @typeName(Collector), self.underlying });
         }
     };
 }
 
-pub inline fn arrayList(
-    parser: anytype,
-    list: *std.ArrayList(@TypeOf(parser).ResultType),
-) CollectorParser(@TypeOf(parser), std.ArrayList(@TypeOf(parser).ResultType)) {
-    return collect(std.ArrayList(@TypeOf(parser).ResultType), parser, list, std.ArrayList(@TypeOf(parser).ResultType).append);
+fn AndThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = struct { UnderlyingLeft.ResultType, UnderlyingRight.ResultType };
+
+        left: UnderlyingLeft,
+        right: UnderlyingRight,
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            const orig_idx = cursor.idx;
+            if (try self.left.parse(cursor)) |l| {
+                if (try self.right.parse(cursor)) |r| {
+                    return .{ l, r };
+                } else {
+                    log.debug("Left parser {any} was failed at {any}", .{ self.left, cursor });
+                    cursor.idx = orig_idx;
+                    return null;
+                }
+            } else {
+                log.debug("Right parser {any} was failed at {any}", .{ self.right, cursor });
+                cursor.idx = orig_idx;
+                return null;
+            }
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<{any} andThen {any}>", .{ self.left, self.right });
+        }
+    };
 }
 
-test "Collect parsed chars to list" {
-    var list = std.ArrayList(u8).init(std.testing.allocator);
-    defer list.deinit();
+fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
+    return struct {
+        pub const ResultType = Either(UnderlyingLeft.ResultType, UnderlyingRight.ResultType);
 
-    const p = arrayList(anyChar(), &list);
+        const Self = @This();
 
-    try std.testing.expectEqualSlices(u8, &[_]u8{}, (try parseStr(std.testing.allocator, p, "")).?.items);
-    try std.testing.expectEqualSlices(
-        u8,
-        &[_]u8{ 'a', 'b', 'c' },
-        (try parseStr(std.testing.allocator, p, "abc")).?.items,
-    );
+        left: UnderlyingLeft,
+        right: UnderlyingRight,
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            const orig_idx = cursor.idx;
+            if (try self.left.parse(cursor)) |a| {
+                return .{ .left = a };
+            }
+            cursor.idx = orig_idx;
+            if (try self.right.parse(cursor)) |b| {
+                return .{ .right = b };
+            }
+            log.debug(
+                "Both parsers {any} and {any} were failed at {any}",
+                .{ self.left, self.right, cursor },
+            );
+            cursor.idx = orig_idx;
+            return null;
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<{any} orElse {any}>", .{ self.left, self.right });
+        }
+    };
 }
 
-pub inline fn tuple(parsers: anytype) TupleParser(@TypeOf(parsers)) {
-    return .{ .parsers = parsers };
-}
-
-fn TupleParser(comptime Parsers: type) type {
-    const struct_info: std.builtin.Type.Struct = switch (@typeInfo(Parsers)) {
+fn Tuple(comptime Underlyings: type) type {
+    const struct_info: std.builtin.Type.Struct = switch (@typeInfo(Underlyings)) {
         .Struct => |s| s,
         else => @compileError(std.fmt.comptimePrint(
             "Parsers should be struct with parsers but it is {any}.",
-            .{@typeInfo(Parsers)},
+            .{@typeInfo(Underlyings)},
         )),
     };
 
@@ -455,13 +675,13 @@ fn TupleParser(comptime Parsers: type) type {
         };
         const size = struct_info.fields.len;
 
-        parsers: Parsers,
+        parsers: Underlyings,
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
             const orig_idx = cursor.idx;
             var result: ResultType = undefined;
             inline for (0..size) |i| {
-                if (try self.parsers[i].parse(cursor)) |v| {
+                if (try self.parsers[i].implementation.parse(cursor)) |v| {
                     result[i] = v;
                 } else {
                     log.debug(
@@ -481,93 +701,13 @@ fn TupleParser(comptime Parsers: type) type {
     };
 }
 
-test "Parse the tuple of chars" {
-    const p = tuple(.{ char('a'), char('b'), char('c') });
-    try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try parseStr(std.testing.allocator, p, "abcdef")).?);
-}
-
-pub fn Either(comptime A: type, B: type) type {
-    return union(enum) { left: A, right: B };
-}
-
-pub inline fn either(left: anytype, right: anytype) EitherParser(@TypeOf(left), @TypeOf(right)) {
-    return .{ .left = left, .right = right };
-}
-
-fn EitherParser(comptime UnderlyingA: type, UnderlyingB: type) type {
-    return struct {
-        pub const ResultType = Either(UnderlyingA.ResultType, UnderlyingB.ResultType);
-
-        const Self = @This();
-
-        left: UnderlyingA,
-        right: UnderlyingB,
-
-        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
-            const orig_idx = cursor.idx;
-            if (try self.left.parse(cursor)) |a| {
-                return .{ .left = a };
-            }
-            cursor.idx = orig_idx;
-            if (try self.right.parse(cursor)) |b| {
-                return .{ .right = b };
-            }
-            log.debug(
-                "Parser both parsers {any} and {any} were failed at {any}",
-                .{ self.left, self.right, cursor },
-            );
-            cursor.idx = orig_idx;
-            return null;
-        }
-
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.print("<Either {any} or {any}>", .{ self.left, self.right });
-        }
-    };
-}
-
-test "Parse either of chars" {
-    const p = either(char('a'), char('b'));
-
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, ""));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "c"));
-    try std.testing.expectEqual(Either(u8, u8){ .left = 'a' }, try parseStr(std.testing.allocator, p, "a"));
-    try std.testing.expectEqual(Either(u8, u8){ .right = 'b' }, try parseStr(std.testing.allocator, p, "b"));
-}
-
-test "Parse either of arrays" {
-    const p = either(array(char('a'), 2), tuple(.{ char('a'), char('b') }));
-
-    try std.testing.expectEqual(
-        [_]u8{'a'} ** 2,
-        (try parseStr(std.testing.allocator, p, "aa")).?.left,
-    );
-    try std.testing.expectEqual(
-        .{ 'a', 'b' },
-        (try parseStr(std.testing.allocator, p, "ab")).?.right,
-    );
-}
-
-pub fn opt(parser: anytype) EitherParser(@TypeOf(parser), Successfull(void)) {
-    return either(parser, successfull({}));
-}
-
-test "Parse optional value" {
-    try std.testing.expectEqual(Either(u8, void){ .right = {} }, parseStr(std.testing.allocator, opt(char('a')), "b"));
-    try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, parseStr(std.testing.allocator, opt(char('a')), "a"));
-}
-
-pub inline fn oneCharOf(comptime chars: []const u8) OneCharOfParser(chars) {
-    return .{};
-}
-
-fn OneCharOfParser(comptime chars: []const u8) type {
+fn OneCharOf(comptime chars: []const u8) type {
     return struct {
         pub const ResultType = u8;
 
         const Self = @This();
 
-        const parser = anyChar();
+        const parser = AnyChar{};
         const sorted_chars: [chars.len]u8 = blk: {
             var buf: [chars.len]u8 = undefined;
             @memcpy(&buf, chars);
@@ -608,24 +748,7 @@ fn OneCharOfParser(comptime chars: []const u8) type {
     };
 }
 
-test "Parse one of chars" {
-    const p = oneCharOf("ab");
-
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, ""));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "c"));
-    try std.testing.expectEqual('a', try parseStr(std.testing.allocator, p, "a"));
-    try std.testing.expectEqual('b', try parseStr(std.testing.allocator, p, "b"));
-}
-
-pub inline fn transform(
-    comptime Result: type,
-    parser: anytype,
-    f: *const fn (a: @TypeOf(parser).ResultType) anyerror!Result,
-) TransformParser(@TypeOf(parser), Result) {
-    return .{ .underlying = parser, .mapFn = f };
-}
-
-fn TransformParser(comptime UnderlyingA: type, B: type) type {
+fn Transform(comptime UnderlyingA: type, B: type) type {
     return struct {
         pub const ResultType = B;
 
@@ -649,23 +772,7 @@ fn TransformParser(comptime UnderlyingA: type, B: type) type {
     };
 }
 
-test "Transform the parsed result" {
-    const ParseInt = struct {
-        fn parseInt(arr: [2]u8) anyerror!u8 {
-            return try std.fmt.parseInt(u8, &arr, 10);
-        }
-    };
-
-    const p = transform(u8, array(anyChar(), 2), ParseInt.parseInt);
-
-    try std.testing.expectEqual(42, try parseStr(std.testing.allocator, p, "42"));
-}
-
-pub inline fn int(comptime T: type) IntParser(T, 128) {
-    return .{};
-}
-
-fn IntParser(comptime T: type, max_buf_size: usize) type {
+fn Int(comptime T: type, max_buf_size: usize) type {
     return struct {
         pub const ResultType = T;
 
@@ -674,13 +781,14 @@ fn IntParser(comptime T: type, max_buf_size: usize) type {
         fn parse(_: Self, cursor: *Cursor) anyerror!?ResultType {
             const orig_idx = cursor.idx;
             var buf: [max_buf_size]u8 = undefined;
-            const sign = oneCharOf("+-");
+            const sign = OneCharOf("+-"){};
             var start: usize = 0;
             if (try sign.parse(cursor)) |s| {
                 buf[0] = s;
                 start += 1;
             }
-            const number = slice(oneCharOf("0123456789_boXABCDF"), buf[start..]);
+            const symbols = OneCharOf("0123456789_boXABCDF"){};
+            const number = Buffer(@TypeOf(symbols)){ .buffer = buf[start..], .underlying = symbols };
             if (try number.parse(cursor)) |n| {
                 if (n.len > 0) {
                     const base: u8 = if (n[0] == '0' and n.len > 1)
@@ -707,17 +815,6 @@ fn IntParser(comptime T: type, max_buf_size: usize) type {
     };
 }
 
-test "Parse integers" {
-    const p = int(i8);
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "2"));
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "+2"));
-    try std.testing.expectEqual(-2, try parseStr(std.testing.allocator, p, "-2"));
-    try std.testing.expectEqual(null, try parseStr(std.testing.allocator, p, "+-2"));
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "0002"));
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "0_0_0_2"));
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "0b10"));
-    try std.testing.expectEqual(2, try parseStr(std.testing.allocator, p, "+0b10"));
-    try std.testing.expectEqual(-2, try parseStr(std.testing.allocator, p, "-0b10"));
-    try std.testing.expectEqual(8, try parseStr(std.testing.allocator, p, "0o10"));
-    try std.testing.expectEqual(10, try parseStr(std.testing.allocator, p, "0XA"));
+test {
+    std.testing.refAllDecls(@This());
 }
