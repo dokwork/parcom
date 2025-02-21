@@ -21,6 +21,20 @@
 // SOFTWARE.
 
 //! This library provides an implementation of the parser combinators.
+//!
+//! An implementation of the parser should follow this interface:
+//! ```zig
+//! struct {
+//!     const Self = @This();
+//!
+//!     /// The type of the result when parsing is successful
+//!     pub const ResultType: type;
+//!
+//!     /// Should get bytes from the reader and puts it to the buffer if they were
+//!     /// not successfully parsed, or return the result of parsing.
+//!     fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType
+//! }
+//! ```
 const std = @import("std");
 
 const log = std.log.scoped(.parcom);
@@ -169,84 +183,44 @@ pub const Parsers = struct {
         const p = Parsers.tuple(.{ Parsers.char('a'), Parsers.char('b'), Parsers.char('c') });
         try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
     }
+
+    pub inline fn lazy(
+        comptime ResultType: type,
+        context: *anyopaque,
+        f: *const fn (context: *anyopaque) anyerror!TaggedParser(ResultType),
+    ) Parser(Lazy(ResultType)) {
+        return .{
+            .implementation = Lazy(ResultType){ .context = context, .buildParserFn = f },
+        };
+    }
 };
 
 /// The final version of the parser with tagged result type.
-/// It can be useful when the type of the parser should be provided in the function signature.
-pub fn TaggedParser(comptime ResultType: type) type {
+/// This version of the parser can be useful when the type of the
+/// parser should be provided in the function signature.
+pub fn TaggedParser(comptime TaggedType: type) type {
     return struct {
-        const Self = @This();
-
-        alloc: std.mem.Allocator,
-        parser: *anyopaque,
-        parseFn: *const fn (parser: *anyopaque, alloc: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType,
-        deinitFn: *const fn (tg: *TaggedParser(ResultType)) void,
-
-        pub fn deinit(self: *Self) void {
-            self.deinitFn(self);
-        }
-
-        pub fn parse(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType {
-            return try self.parseFn(self.parser, alloc, reader);
-        }
-
-        pub fn parseString(self: Self, alloc: std.mem.Allocator, str: []const u8) anyerror!?ResultType {
-            var fbs = std.io.fixedBufferStream(str);
-            var reader = fbs.reader();
-            return try self.parse(alloc, reader.any());
-        }
-    };
-}
-
-pub fn Parser(comptime Implementation: type) type {
-    return struct {
-        const ResultType = Implementation.ResultType;
+        pub const ResultType = TaggedType;
 
         const Self = @This();
 
-        implementation: Implementation,
+        parser: *const anyopaque,
+        parseFn: *const fn (parser: *const anyopaque, cursor: *Cursor) anyerror!?ResultType,
 
-        pub fn tagged(self: Self, alloc: std.mem.Allocator) !TaggedParser(ResultType) {
-            const fns = struct {
-                fn parse(ptr: *anyopaque, a: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType {
-                    const s: *Self = @ptrCast(@alignCast(ptr));
-                    return try s.parseAnyReader(a, reader);
-                }
-                fn deinit(tg: *TaggedParser(ResultType)) void {
-                    const s: *Self = @ptrCast(@alignCast(tg.parser));
-                    tg.alloc.destroy(s);
-                    tg.parser = undefined;
-                }
-            };
-            // To arise the type of Implementation, we have to move the parser to the heap
-            const parser = try alloc.create(Self);
-            parser.* = self;
-            return .{
-                .alloc = alloc,
-                .parser = parser,
-                .parseFn = fns.parse,
-                .deinitFn = fns.deinit,
-            };
-        }
-
-        test "tagged parser example" {
-            var p = Parsers.char('a');
-            var tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
-            defer tg.deinit();
-
-            try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
+        inline fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            return try self.parseFn(self.parser, cursor);
         }
 
         fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader };
             defer cursor.buffer.deinit();
-            return try self.implementation.parse(&cursor);
+            return try self.parse(&cursor);
         }
 
         /// It runs this parser to parse an input from the `reader`. The whole input
         /// will be persisted in the inner buffer during the parsing. The allocator is
         /// used to allocate memory for inner buffer.
-        pub inline fn parse(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
+        pub inline fn parseReader(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
             return try self.parseAnyReader(alloc, reader.any());
         }
 
@@ -258,13 +232,76 @@ pub fn Parser(comptime Implementation: type) type {
             str: []const u8,
         ) !?ResultType {
             var fbs = std.io.fixedBufferStream(str);
-            return self.parse(alloc, fbs.reader());
+            return self.parseReader(alloc, fbs.reader());
+        }
+    };
+}
+
+/// The wrapper around an implementation of the parser provides a methods
+/// to combine parsers.
+pub fn Parser(comptime Implementation: type) type {
+    return struct {
+        pub const ResultType = Implementation.ResultType;
+
+        const Self = @This();
+
+        implementation: Implementation,
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("{any}", .{self.implementation});
+        }
+
+        pub fn tagged(self: *const Self) TaggedParser(ResultType) {
+            const fns = struct {
+                fn parse(ptr: *const anyopaque, cursor: *Cursor) anyerror!?ResultType {
+                    const s: *const Self = @ptrCast(@alignCast(ptr));
+                    return try s.parse(cursor);
+                }
+            };
+            return .{
+                .parser = self,
+                .parseFn = fns.parse,
+            };
+        }
+
+        test "tagged parser example" {
+            var p = Parsers.char('a');
+            var tg: TaggedParser(u8) = p.tagged();
+
+            try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
+        }
+        inline fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            return try self.implementation.parse(cursor);
+        }
+
+        fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
+            var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader };
+            defer cursor.buffer.deinit();
+            return try self.parse(&cursor);
+        }
+
+        /// It runs this parser to parse an input from the `reader`. The whole input
+        /// will be persisted in the inner buffer during the parsing. The allocator is
+        /// used to allocate memory for inner buffer.
+        pub inline fn parseReader(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
+            return try self.parseAnyReader(alloc, reader.any());
+        }
+
+        /// It creates an fixed buffer stream from the passed string to build the
+        /// reader, and then invokes the `parse` method with it reader.
+        pub inline fn parseString(
+            self: Self,
+            alloc: std.mem.Allocator,
+            str: []const u8,
+        ) !?ResultType {
+            var fbs = std.io.fixedBufferStream(str);
+            return self.parseReader(alloc, fbs.reader());
         }
 
         pub inline fn andThen(
             self: Self,
             other: anytype,
-        ) Parser(AndThen(@TypeOf(self.implementation), @TypeOf(other.implementation))) {
+        ) Parser(AndThen(Implementation, @TypeOf(other.implementation))) {
             return .{ .implementation = .{ .left = self.implementation, .right = other.implementation } };
         }
 
@@ -278,7 +315,7 @@ pub fn Parser(comptime Implementation: type) type {
         pub inline fn orElse(
             self: Self,
             right: anytype,
-        ) Parser(OrElse(@TypeOf(self.implementation), @TypeOf(right.implementation))) {
+        ) Parser(OrElse(Implementation, @TypeOf(right.implementation))) {
             return .{ .implementation = .{ .left = self.implementation, .right = right.implementation } };
         }
 
@@ -290,9 +327,9 @@ pub fn Parser(comptime Implementation: type) type {
             try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
         }
 
-        pub inline fn optional(self: Self) Parser(OrElse(@TypeOf(self.implementation), Successfull(void))) {
+        pub inline fn optional(self: Self) Parser(OrElse(Implementation, Successfull(void))) {
             return .{
-                .implementation = OrElse(@TypeOf(self.implementation), Successfull(void)){
+                .implementation = OrElse(Implementation, Successfull(void)){
                     .left = self.implementation,
                     .right = Successfull(void){ .result = {} },
                 },
@@ -322,7 +359,7 @@ pub fn Parser(comptime Implementation: type) type {
             return .{ .implementation = .{ .underlying = self.implementation, .context = context, .conditionFn = condition } };
         }
 
-        pub inline fn repeatToArray(self: Self, comptime count: u8) Parser(Array(@TypeOf(self.implementation), count)) {
+        pub inline fn repeatToArray(self: Self, comptime count: u8) Parser(Array(Implementation, count)) {
             return .{ .implementation = .{ .underlying = self.implementation } };
         }
 
@@ -343,7 +380,7 @@ pub fn Parser(comptime Implementation: type) type {
             );
         }
 
-        pub inline fn repeatToBuffer(self: Self, buffer: []u8) Parser(Buffer(@TypeOf(self.implementation))) {
+        pub inline fn repeatToBuffer(self: Self, buffer: []ResultType) Parser(Buffer(Implementation)) {
             return .{ .implementation = .{ .underlying = self.implementation, .buffer = buffer } };
         }
 
@@ -370,19 +407,18 @@ pub fn Parser(comptime Implementation: type) type {
             comptime Collector: type,
             collector: *Collector,
             addFn: *const fn (ctx: *Collector, ResultType) anyerror!void,
-        ) Parser(Collect(@TypeOf(self.implementation), Collector)) {
+        ) Parser(Collect(Implementation, Collector)) {
             return .{ .implementation = .{ .underlying = self.implementation, .collector = collector, .addFn = addFn } };
         }
 
         pub inline fn repeatToList(
             self: Self,
             list: *std.ArrayList(ResultType),
-        ) Parser(Collect(@TypeOf(self.implementation), std.ArrayList(ResultType))) {
+        ) Parser(ArrayList(Implementation)) {
             return .{
-                .implementation = Collect(@TypeOf(self.implementation), std.ArrayList(ResultType)){
+                .implementation = ArrayList(Implementation){
                     .underlying = self.implementation,
-                    .collector = list,
-                    .addFn = std.ArrayList(ResultType).append,
+                    .list = list,
                 },
             };
         }
@@ -393,11 +429,20 @@ pub fn Parser(comptime Implementation: type) type {
 
             const p = Parsers.anyChar().repeatToList(&list);
 
-            try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(std.testing.allocator, "")).?.items);
             try std.testing.expectEqualSlices(
                 u8,
                 &[_]u8{ 'a', 'b', 'c' },
-                (try p.parseString(std.testing.allocator, "abc")).?.items,
+                (try p.parseString(std.testing.allocator, "abc")).?,
+            );
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'd', 'e', 'f' },
+                (try p.parseString(std.testing.allocator, "def")).?,
+            );
+            try std.testing.expectEqualSlices(
+                u8,
+                &[_]u8{ 'a', 'b', 'c', 'd', 'e', 'f' },
+                list.items,
             );
         }
 
@@ -405,7 +450,7 @@ pub fn Parser(comptime Implementation: type) type {
             self: Self,
             comptime Result: type,
             f: *const fn (a: ResultType) anyerror!Result,
-        ) Parser(Transform(@TypeOf(self.implementation), Result)) {
+        ) Parser(Transform(Implementation, Result)) {
             return .{ .implementation = .{ .underlying = self.implementation, .mapFn = f } };
         }
 
@@ -417,6 +462,10 @@ pub fn Parser(comptime Implementation: type) type {
             }.parseInt);
 
             try std.testing.expectEqual(42, try p.parseString(std.testing.allocator, "42"));
+        }
+
+        pub fn debug(self: Self, comptime scope: @Type(.EnumLiteral)) Parser(Logged(Self, scope)) {
+            return .{ .implementation = Logged(Self, scope){ .underlying = self } };
         }
     };
 }
@@ -578,7 +627,7 @@ fn Buffer(comptime Underlying: type) type {
         pub const ResultType = []Underlying.ResultType;
 
         underlying: Underlying,
-        buffer: []u8,
+        buffer: []Underlying.ResultType,
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
             var i: usize = 0;
@@ -622,6 +671,25 @@ fn Array(comptime Underlying: type, count: u8) type {
 
         pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Array of {s}>", .{self.underlying});
+        }
+    };
+}
+
+fn ArrayList(comptime Underlying: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = []Underlying.ResultType;
+
+        underlying: Underlying,
+        list: *std.ArrayList(Underlying.ResultType),
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            const start = self.list.items.len;
+            while (try self.underlying.parse(cursor)) |t| {
+                try self.list.append(t);
+            }
+            return self.list.items[start..];
         }
     };
 }
@@ -753,7 +821,7 @@ fn Tuple(comptime Underlyings: type) type {
             const orig_idx = cursor.idx;
             var result: ResultType = undefined;
             inline for (0..size) |i| {
-                if (try self.parsers[i].implementation.parse(cursor)) |v| {
+                if (try self.parsers[i].parse(cursor)) |v| {
                     result[i] = v;
                 } else {
                     log.debug(
@@ -883,6 +951,47 @@ fn Int(comptime T: type, max_buf_size: usize) type {
 
         pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll("<Integer>");
+        }
+    };
+}
+
+fn Lazy(comptime Type: type) type {
+    return struct {
+        const Self = @This();
+        pub const ResultType = Type;
+
+        context: *anyopaque,
+        buildParserFn: *const fn (context: *anyopaque) anyerror!TaggedParser(Type),
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            const parser = try self.buildParserFn(self.context);
+            return try parser.parse(cursor);
+        }
+    };
+}
+
+fn Logged(comptime Underlying: type, scope: @Type(.EnumLiteral)) type {
+    return struct {
+        pub const ResultType = Underlying.ResultType;
+
+        const Self = @This();
+
+        const logger = std.log.scoped(scope);
+
+        underlying: Underlying,
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            const maybe_result = self.underlying.parse(cursor) catch |err| {
+                logger.debug("Error on parsing by {any}: {any}", .{ self.underlying, err });
+                return err;
+            };
+            if (maybe_result) |result| {
+                logger.debug("Result of the {any} is {any}", .{ self.underlying, result });
+                return result;
+            } else {
+                logger.debug("The parser {any} is failed", .{self.underlying});
+                return null;
+            }
         }
     };
 }
