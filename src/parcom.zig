@@ -20,16 +20,19 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-//! This is the simple library provided an implementation of the parser combinators.
+//! This library provides an implementation of the parser combinators.
 const std = @import("std");
 
 const log = std.log.scoped(.parcom);
 
 pub const Parsers = struct {
+    /// This parser doesn't read any bytes from the input,
+    /// and always returns passed value as the result.
     pub fn successfull(result: anytype) Parser(Successfull(@TypeOf(result))) {
         return .{ .underlying = .{ .result = result } };
     }
 
+    /// This parser reads one byte from the input, and returns it as the result.
     pub inline fn anyChar() Parser(AnyChar) {
         return .{ .implementation = .{} };
     }
@@ -39,6 +42,8 @@ pub const Parsers = struct {
         try std.testing.expectEqual(null, try Parsers.anyChar().parseString(std.testing.allocator, ""));
     }
 
+    /// This parser reads one byte from the input, and returns `C` as the
+    /// result if the same byte was read.
     pub fn char(comptime C: u8) Parser(Const(AnyChar, C)) {
         return .{ .implementation = .{ .underlying = AnyChar{} } };
     }
@@ -50,6 +55,8 @@ pub const Parsers = struct {
         try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
     }
 
+    /// This parser reads one byte from the input and returns it as the result
+    /// if it is present in the chars set.
     pub inline fn oneCharOf(comptime chars: []const u8) Parser(OneCharOf(chars)) {
         return .{ .implementation = .{} };
     }
@@ -62,6 +69,9 @@ pub const Parsers = struct {
         try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
     }
 
+    /// This parser reads bytes from the input into the buffer as long as they
+    /// are in the chars set "+-0123456789_boXABCDF". Then it attempts to parse
+    /// the buffer as an integer using `std.fmt.parseInt`.
     pub inline fn int(comptime T: type) Parser(Int(T, 128)) {
         return .{ .implementation = .{} };
     }
