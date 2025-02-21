@@ -171,6 +171,33 @@ pub const Parsers = struct {
     }
 };
 
+/// The final version of the parser with tagged result type.
+/// It can be useful when the type of the parser should be provided in the function signature.
+pub fn TaggedParser(comptime ResultType: type) type {
+    return struct {
+        const Self = @This();
+
+        alloc: std.mem.Allocator,
+        parser: *anyopaque,
+        parseFn: *const fn (parser: *anyopaque, alloc: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType,
+        deinitFn: *const fn (tg: *TaggedParser(ResultType)) void,
+
+        pub fn deinit(self: *Self) void {
+            self.deinitFn(self);
+        }
+
+        pub fn parse(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType {
+            return try self.parseFn(self.parser, alloc, reader);
+        }
+
+        pub fn parseString(self: Self, alloc: std.mem.Allocator, str: []const u8) anyerror!?ResultType {
+            var fbs = std.io.fixedBufferStream(str);
+            var reader = fbs.reader();
+            return try self.parse(alloc, reader.any());
+        }
+    };
+}
+
 pub fn Parser(comptime Implementation: type) type {
     return struct {
         const ResultType = Implementation.ResultType;
@@ -179,13 +206,48 @@ pub fn Parser(comptime Implementation: type) type {
 
         implementation: Implementation,
 
+        pub fn tagged(self: Self, alloc: std.mem.Allocator) !TaggedParser(ResultType) {
+            const fns = struct {
+                fn parse(ptr: *anyopaque, a: std.mem.Allocator, reader: std.io.AnyReader) anyerror!?ResultType {
+                    const s: *Self = @ptrCast(@alignCast(ptr));
+                    return try s.parseAnyReader(a, reader);
+                }
+                fn deinit(tg: *TaggedParser(ResultType)) void {
+                    const s: *Self = @ptrCast(@alignCast(tg.parser));
+                    tg.alloc.destroy(s);
+                    tg.parser = undefined;
+                }
+            };
+            // To arise the type of Implementation, we have to move the parser to the heap
+            const parser = try alloc.create(Self);
+            parser.* = self;
+            return .{
+                .alloc = alloc,
+                .parser = parser,
+                .parseFn = fns.parse,
+                .deinitFn = fns.deinit,
+            };
+        }
+
+        test "tagged parser example" {
+            var p = Parsers.char('a');
+            var tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
+            defer tg.deinit();
+
+            try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
+        }
+
+        fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
+            var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader };
+            defer cursor.buffer.deinit();
+            return try self.implementation.parse(&cursor);
+        }
+
         /// It runs this parser to parse an input from the `reader`. The whole input
         /// will be persisted in the inner buffer during the parsing. The allocator is
         /// used to allocate memory for inner buffer.
-        pub fn parse(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
-            var cursor = Cursor{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader.any() };
-            defer cursor.buffer.deinit();
-            return try self.implementation.parse(&cursor);
+        pub inline fn parse(self: Self, alloc: std.mem.Allocator, reader: anytype) !?ResultType {
+            return try self.parseAnyReader(alloc, reader.any());
         }
 
         /// It creates an fixed buffer stream from the passed string to build the
