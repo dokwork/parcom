@@ -24,14 +24,14 @@ fn evaluate(alloc: std.mem.Allocator, expression: []const u8) !?Value {
     return try p.parseString(alloc, expression);
 }
 
-test {
+test "11+(24-5)+6*2" {
     std.testing.log_level = .debug;
 
-//[expression] (info): 24 minus 5 = 19
-//[expression] (info): 11 minus 5 = 6
-//[expression] (info): 6 plus 19 = 25
-//[expression] (info): 25 plus 6 = 31
-//[expression] (info): 31 multiply 2 = 62
+    //[expression] (info): 24 minus 5 = 19
+    //[expression] (info): 11 minus 5 = 6
+    //[expression] (info): 6 plus 19 = 25
+    //[expression] (info): 25 plus 6 = 31
+    //[expression] (info): 31 multiply 2 = 62
     try std.testing.expectEqual(42, try evaluate(std.testing.allocator, "11+(24-5)+6*2"));
 }
 
@@ -73,6 +73,10 @@ const Operation = enum {
 /// Value   ← [0-9]+ / '(' Expr ')'
 fn expr(context: *anyopaque) !parcom.TaggedParser(Value) {
     const fns = struct {
+        fn parseInt(str: [10:0]u8) anyerror!Value {
+            const len = std.mem.len(@as([*:0]const u8, &str));
+            return try std.fmt.parseUnsigned(Value, str[0..len], 10);
+        }
         fn valueFromParens(result: struct { u8, Value, u8 }) anyerror!Value {
             return result[1];
         }
@@ -94,7 +98,9 @@ fn expr(context: *anyopaque) !parcom.TaggedParser(Value) {
     const rb = P.char(')');
     const parens = P.tuple(.{ lb, P.lazy(Value, context, expr), rb }).transform(Value, fns.valueFromParens).debug(.parens);
     const operation = P.oneCharOf("+-*/").transform(Operation, Operation.parse);
-    const value = P.int(Value).orElse(parens).transform(Value, fns.valueFromEither).debug(.value);
+    // we can't use Parsers.int to parse numbers here to avoid consumption of the '-' and '+'
+    const number = P.range('0', '9').repeatToSentinelArray(1, 10, 0).transform(Value, fns.parseInt);
+    const value = number.orElse(parens).transform(Value, fns.valueFromEither).debug(.value);
     const product = product_blk: {
         const tail = operation.andThen(value);
         const list: *std.ArrayList(@TypeOf(tail).ResultType) = @ptrCast(@alignCast(context));

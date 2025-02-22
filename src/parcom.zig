@@ -380,6 +380,34 @@ pub fn Parser(comptime Implementation: type) type {
             );
         }
 
+        pub inline fn repeatToSentinelArray(
+            self: Self,
+            comptime min_count: u8,
+            comptime max_count: u8,
+            comptime sentinel: ResultType,
+        ) Parser(SentinelArray(Implementation, min_count, max_count, sentinel)) {
+            return .{ .implementation = .{ .underlying = self.implementation } };
+        }
+
+        test "repeatToSentinelArray example" {
+            const p0 = Parsers.char('a').repeatToSentinelArray(0, 2, 0);
+
+            var result: [2:0]u8 = (try p0.parseString(std.testing.allocator, "")).?;
+            try std.testing.expectEqual(0, result[0]);
+
+            const p = Parsers.char('a').repeatToSentinelArray(1, 2, 0);
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
+
+            result = (try p.parseString(std.testing.allocator, "ab")).?;
+            try std.testing.expectEqual('a', result[0]);
+            try std.testing.expectEqual(0, result[2]);
+
+            result = (try p.parseString(std.testing.allocator, "aa")).?;
+            try std.testing.expectEqual('a', result[0]);
+            try std.testing.expectEqual('a', result[1]);
+            try std.testing.expectEqual(0, result[2]);
+        }
+
         pub inline fn repeatToBuffer(self: Self, buffer: []ResultType) Parser(Buffer(Implementation)) {
             return .{ .implementation = .{ .underlying = self.implementation, .buffer = buffer } };
         }
@@ -577,12 +605,7 @@ fn Conditional(comptime Label: []const u8, Underlying: type, Context: type) type
             const orig_idx = cursor.idx;
             if (try self.underlying.parse(cursor)) |res| {
                 if (self.conditionFn(self.context, res)) return res;
-                log.debug("The value {any} is not satisfied to the condition.", .{res});
             }
-            log.debug(
-                "Parser {any} was failed at {any}",
-                .{ self.underlying, cursor },
-            );
             cursor.idx = orig_idx;
             return null;
         }
@@ -605,10 +628,6 @@ fn Const(comptime Underlying: type, comptime template: Underlying.ResultType) ty
             const orig_idx = cursor.idx;
             if (try self.underlying.parse(cursor)) |res| {
                 if (res == template) return res;
-                log.debug(
-                    "{any} is not equal to {any} at {any}",
-                    .{ res, template, cursor },
-                );
             }
             cursor.idx = orig_idx;
             return null;
@@ -658,10 +677,6 @@ fn Array(comptime Underlying: type, count: u8) type {
                 if (try self.underlying.parse(cursor)) |t| {
                     result[i] = t;
                 } else {
-                    log.debug(
-                        "Parser {any} was failed at {any}",
-                        .{ self.underlying, cursor },
-                    );
                     cursor.idx = orig_idx;
                     return null;
                 }
@@ -671,6 +686,38 @@ fn Array(comptime Underlying: type, count: u8) type {
 
         pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Array of {s}>", .{self.underlying});
+        }
+    };
+}
+
+fn SentinelArray(comptime Underlying: type, min_count: u8, max_count: u8, sentinel: Underlying.ResultType) type {
+    std.debug.assert(max_count > 0);
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = [max_count:sentinel]Underlying.ResultType;
+
+        underlying: Underlying,
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            var result: ResultType = undefined;
+            var i: usize = 0;
+            while (i < max_count) : (i += 1) {
+                if (try self.underlying.parse(cursor)) |t| {
+                    result[i] = t;
+                } else {
+                    break;
+                }
+            }
+            if (i < min_count)
+                return null;
+
+            result[i] = sentinel;
+            return result;
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<SentinelArray of {s}>", .{self.underlying});
         }
     };
 }
@@ -690,6 +737,10 @@ fn ArrayList(comptime Underlying: type) type {
                 try self.list.append(t);
             }
             return self.list.items[start..];
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<ArrayList of {s}>", .{self.underlying});
         }
     };
 }
@@ -732,12 +783,10 @@ fn AndThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
                 if (try self.right.parse(cursor)) |r| {
                     return .{ l, r };
                 } else {
-                    log.debug("Left parser {any} was failed at {any}", .{ self.left, cursor });
                     cursor.idx = orig_idx;
                     return null;
                 }
             } else {
-                log.debug("Right parser {any} was failed at {any}", .{ self.right, cursor });
                 cursor.idx = orig_idx;
                 return null;
             }
@@ -767,10 +816,6 @@ fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
             if (try self.right.parse(cursor)) |b| {
                 return .{ .right = b };
             }
-            log.debug(
-                "Both parsers {any} and {any} were failed at {any}",
-                .{ self.left, self.right, cursor },
-            );
             cursor.idx = orig_idx;
             return null;
         }
@@ -824,10 +869,6 @@ fn Tuple(comptime Underlyings: type) type {
                 if (try self.parsers[i].parse(cursor)) |v| {
                     result[i] = v;
                 } else {
-                    log.debug(
-                        "Parser {d} {any} was failed at {any}",
-                        .{ i, self.parsers[i], cursor },
-                    );
                     cursor.idx = orig_idx;
                     return null;
                 }
@@ -861,12 +902,6 @@ fn OneCharOf(comptime chars: []const u8) type {
                 if (std.sort.binarySearch(u8, ch, &sorted_chars, {}, compareChars)) |_| {
                     return ch;
                 } else {
-                    const symbol = switch (ch) {
-                        '\n' => "\\n",
-                        '\t' => "\\t",
-                        else => &[_]u8{ch},
-                    };
-                    log.debug("The '{s}' symbol was not found in {s}", .{ symbol, chars });
                     cursor.idx = orig_idx;
                     return null;
                 }
@@ -921,8 +956,8 @@ fn Int(comptime T: type, max_buf_size: usize) type {
         fn parse(_: Self, cursor: *Cursor) anyerror!?ResultType {
             const orig_idx = cursor.idx;
             var buf: [max_buf_size]u8 = undefined;
-            const sign = OneCharOf("+-"){};
             var start: usize = 0;
+            const sign = OneCharOf("+-"){};
             if (try sign.parse(cursor)) |s| {
                 buf[0] = s;
                 start += 1;
@@ -939,12 +974,11 @@ fn Int(comptime T: type, max_buf_size: usize) type {
                     else
                         10;
                     return std.fmt.parseInt(T, buf[0 .. n.len + start], base) catch |e| {
-                        log.debug("The string \"{s}\" is not a number with base {d}", .{ n, base });
+                        log.err("The string \"{s}\" is not a number with base {d}", .{ n, base });
                         return e;
                     };
                 }
             }
-            log.debug("Parsing integer was failed at {any}", .{cursor});
             cursor.idx = orig_idx;
             return null;
         }
@@ -967,6 +1001,10 @@ fn Lazy(comptime Type: type) type {
             const parser = try self.buildParserFn(self.context);
             return try parser.parse(cursor);
         }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<Lazy {any}>", .{self.buildParserFn});
+        }
     };
 }
 
@@ -982,16 +1020,20 @@ fn Logged(comptime Underlying: type, scope: @Type(.EnumLiteral)) type {
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
             const maybe_result = self.underlying.parse(cursor) catch |err| {
-                logger.debug("Error on parsing by {any}: {any}", .{ self.underlying, err });
+                logger.debug("Error on parsing by {any}: {any} at {any}", .{ self.underlying, err, cursor });
                 return err;
             };
             if (maybe_result) |result| {
-                logger.debug("Result of the {any} is {any}", .{ self.underlying, result });
+                logger.debug("Result of the {any} is {any} at {any}", .{ self.underlying, result, cursor });
                 return result;
             } else {
-                logger.debug("The parser {any} is failed", .{self.underlying});
+                logger.debug("The parser {any} is failed at {any}", .{ self.underlying, cursor });
                 return null;
             }
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<Logged with scope {s} {any}>", .{ @tagName(scope), self.underlying });
         }
     };
 }
