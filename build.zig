@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     b.step("docs", "Build docs").dependOn(&install_docs.step);
 
     // ----- Example -----
-    // to handle many examples see 
+    // to handle many examples see
     // https://github.com/zigzap/zap/blob/master/build.zig#L49
 
     const example = b.addExecutable(.{
@@ -41,18 +41,23 @@ pub fn build(b: *std.Build) void {
     example.root_module.addImport("parcom", parcom);
 
     b.installArtifact(example);
-    
+
     const run_example = b.addRunArtifact(example);
+    if (b.args) |args| {
+        run_example.addArgs(args);
+    }
 
     const run_step = b.step("example", "Run example of parsing an expression");
     run_step.dependOn(&run_example.step);
 
     // ----- Unit tests -----
+    const test_filters = b.option([]const []const u8, "test-filter", "Skip tests that do not match any filter") orelse &[0][]const u8{};
 
     const parcom_tests = b.addTest(.{
         .root_source_file = b.path("src/parcom.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = test_filters,
     });
 
     const run_parcom_tests = b.addRunArtifact(parcom_tests);
@@ -61,6 +66,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("test/test_pkg.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = test_filters,
     });
 
     additional_tests.root_module.addImport("parcom", parcom);
@@ -71,6 +77,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("example/expression.zig"),
         .target = target,
         .optimize = optimize,
+        .filters = test_filters,
     });
 
     example_tests.root_module.addImport("parcom", parcom);
