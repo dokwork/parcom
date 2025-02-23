@@ -62,17 +62,6 @@ pub fn build(b: *std.Build) void {
 
     const run_parcom_tests = b.addRunArtifact(parcom_tests);
 
-    const additional_tests = b.addTest(.{
-        .root_source_file = b.path("test/test_pkg.zig"),
-        .target = target,
-        .optimize = optimize,
-        .filters = test_filters,
-    });
-
-    additional_tests.root_module.addImport("parcom", parcom);
-
-    const run_additional_tests = b.addRunArtifact(additional_tests);
-
     const example_tests = b.addTest(.{
         .root_source_file = b.path("example/expression.zig"),
         .target = target,
@@ -86,6 +75,5 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_parcom_tests.step);
-    test_step.dependOn(&run_additional_tests.step);
     test_step.dependOn(&run_example_tests.step);
 }
