@@ -35,6 +35,15 @@
 //!     fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType
 //! }
 //! ```
+//! Three different types of parser implementations exist:
+//! 1.  The inner parser implementations, which contain the logic for parsing the input.
+//! 2.  The public wrapper `ParserCombinator`, which provides methods to combine parsers and create new ones.
+//! 3.  The public wrapper `TaggedParser`, which erase the type of the underlying parser in `ParserCombinator`,
+//!     allowing for explicit type declaration in the code.
+//!
+//! The namespace `Parsers` provides a set of base parses.
+//!
+//! Github page: [https://github.com/dokwork/parcom](https://github.com/dokwork/parcom)
 const std = @import("std");
 
 const log = std.log.scoped(.parcom);
@@ -45,6 +54,18 @@ pub const Parsers = struct {
     /// and always returns passed value as the result.
     pub fn successfull(result: anytype) ParserCombinator(Successfull(@TypeOf(result))) {
         return .{ .underlying = .{ .result = result } };
+    }
+
+    /// Creates a parser that fails if the input buffer contains not handled items, or otherwise
+    /// tries to consume one byte from the input, and completes successfully if `EndOfStream`
+    /// happened. It similar to '$' in regexp.
+    pub fn end() ParserCombinator(End) {
+        return .{ .implementation = .{} };
+    }
+
+    test "Parse end example" {
+        try std.testing.expectEqual({}, try Parsers.end().parseString(std.testing.allocator, ""));
+        try std.testing.expectEqual(null, try Parsers.end().parseString(std.testing.allocator, "anything"));
     }
 
     /// Creates a parser that reads one byte from the input, and returns it as the result.
@@ -181,6 +202,8 @@ pub const Parsers = struct {
         try std.testing.expectEqual('C', try p.parseString(std.testing.allocator, "C"));
     }
 
+    /// Creates a parser that sequentially applies all passed parsers, and returns a tuple of
+    /// all results.
     pub inline fn tuple(parsers: anytype) ParserCombinator(Tuple(@TypeOf(parsers))) {
         return .{ .implementation = .{ .parsers = parsers } };
     }
@@ -190,7 +213,7 @@ pub const Parsers = struct {
         try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
     }
 
-    /// Creates a parser that invoke the function `f` to create a tagged parser, which will be used
+    /// Creates a parser that invokes the function `f` to create a tagged parser, which will be used
     /// to parse the input. That tagged parser will be deinited at the end of parsing.
     pub inline fn lazy(
         comptime ResultType: type,
@@ -228,6 +251,7 @@ pub fn TaggedParser(comptime TaggedType: type) type {
             self.deinitFn(self.alloc, self.underlying);
         }
 
+        /// This method is similar to the same method in `ParserCombinator`.
         fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var cursor = Cursor.init(alloc, reader);
             defer cursor.deinit();
@@ -327,6 +351,8 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             return self.parseReader(alloc, fbs.reader());
         }
 
+        ///  Combines self parser with other to create a new parser that applies both underlying parsers
+        ///  to the input, producing a tuple of results from each.
         pub inline fn andThen(
             self: Self,
             other: anytype,
@@ -341,11 +367,55 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(.{ 'a', 'b' }, try p.parseString(std.testing.allocator, "ab"));
         }
 
+        ///  Combines self parser with other to create a new parser that
+        ///  applies both underlying parsers to the input, producing a result from the self parser.
+        pub inline fn leftThen(
+            self: Self,
+            other: anytype,
+        ) ParserCombinator(LeftThen(Implementation, @TypeOf(other.implementation))) {
+            return .{
+                .implementation = LeftThen(Implementation, @TypeOf(other.implementation)){
+                    .underlying = .{ .left = self.implementation, .right = other.implementation },
+                },
+            };
+        }
+
+        test "leftThen example" {
+            const p = Parsers.char('a').leftThen(Parsers.char('b'));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
+            try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "ab"));
+        }
+
+        ///  Combines self parser with other to create a new parser that
+        ///  applies both underlying parsers to the input, producing a result from the other parser.
+        pub inline fn rightThen(
+            self: Self,
+            other: anytype,
+        ) ParserCombinator(RightThen(Implementation, @TypeOf(other.implementation))) {
+            return .{
+                .implementation = RightThen(Implementation, @TypeOf(other.implementation)){
+                    .underlying = .{ .left = self.implementation, .right = other.implementation },
+                },
+            };
+        }
+
+        test "rightThen example" {
+            const p = Parsers.char('a').rightThen(Parsers.char('b'));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
+            try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
+            try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "ab"));
+        }
+
+        ///  Combines self parser with other to create a new parser that applies at first the self
+        ///  parser, and if it was unsuccessful, applies the other. It returns tagged union with
+        ///  `.left` value for the result from the self parser, or the `.right` value for the result
+        ///  from the other parser.
         pub inline fn orElse(
             self: Self,
-            right: anytype,
-        ) ParserCombinator(OrElse(Implementation, @TypeOf(right.implementation))) {
-            return .{ .implementation = .{ .left = self.implementation, .right = right.implementation } };
+            other: anytype,
+        ) ParserCombinator(OrElse(Implementation, @TypeOf(other.implementation))) {
+            return .{ .implementation = .{ .left = self.implementation, .right = other.implementation } };
         }
 
         test "orElse example" {
@@ -356,6 +426,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
         }
 
+        /// Wraps the self parser in a new one that returns `Either{ .right: void }` when the underlying fails.
         pub fn optional(self: Self) ParserCombinator(OrElse(Implementation, Successfull(void))) {
             return .{
                 .implementation = OrElse(Implementation, Successfull(void)){
@@ -371,6 +442,8 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString(std.testing.allocator, "b"));
         }
 
+        /// Wraps the self parser in a new one that applies the `condition` function to the result of
+        /// the underlying parser and fails if the function returns `false`.
         pub inline fn suchThat(
             self: Self,
             context: anytype,
@@ -379,6 +452,9 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             return .{ .implementation = .{ .underlying = self.implementation, .context = context, .conditionFn = condition } };
         }
 
+        /// Wraps the self parser in a new one that repeat it until the underlying parser fails.
+        /// All parsed results are stored in a slice allocated by the provided allocator.
+        /// The returned slice must be freed using `free` method of the same allocator.
         pub inline fn repeat(self: Self, alloc: std.mem.Allocator) ParserCombinator(Slice(Implementation)) {
             return .{ .implementation = .{ .underlying = self.implementation, .alloc = alloc } };
         }
@@ -396,6 +472,9 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try p.parseString(alloc, "aab")).?);
         }
 
+        /// Wraps the self parser in a new one that repeat it until the `count` results will be parsed,
+        /// or the underlying parser fails. If the underlying parser fails before producing `count`
+        /// results, the new parser fails. Otherwise, an array containing the count items is returned.
         pub inline fn repeatToArray(self: Self, comptime count: u8) ParserCombinator(Array(Implementation, count)) {
             return .{ .implementation = .{ .underlying = self.implementation } };
         }
@@ -417,6 +496,11 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             );
         }
 
+        /// Wraps the self parser in a new one that repeat it until the `max_count` results will be parsed,
+        /// or the underlying parser fails. The new parser doesn't fail when the underlying doesn't
+        /// produce `max_count` results. Instead, it set the sentinel element after the last
+        /// parsed result to the final array. If count of parsed results is less than `min_count`, the
+        /// returned parser fails.
         pub inline fn repeatToSentinelArray(
             self: Self,
             comptime min_count: u8,
@@ -450,15 +534,25 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(0, result[2]);
         }
 
+        /// Wraps the self parser in a new one that repeat the underlying parser until if fails.
+        /// It applies the function `add_to_collection` to the every parsed item.
         pub inline fn collectTo(
             self: Self,
             comptime Collector: type,
             collector: *Collector,
-            addFn: *const fn (ctx: *Collector, ResultType) anyerror!void,
+            add_to_collection: *const fn (ctx: *Collector, ResultType) anyerror!void,
         ) ParserCombinator(Collect(Implementation, Collector)) {
-            return .{ .implementation = .{ .underlying = self.implementation, .collector = collector, .addFn = addFn } };
+            return .{
+                .implementation = .{
+                    .underlying = self.implementation,
+                    .collector = collector,
+                    .addFn = add_to_collection,
+                },
+            };
         }
 
+        /// Wraps the self parser in a new one that applies the function `f` to the parsing result and
+        /// returns the value produced by the function.
         pub inline fn transform(
             self: Self,
             comptime Result: type,
@@ -784,6 +878,48 @@ fn AndThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
     };
 }
 
+fn LeftThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = UnderlyingLeft.ResultType;
+
+        underlying: AndThen(UnderlyingLeft, UnderlyingRight),
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            if (try self.underlying.parse(cursor)) |tuple| {
+                return tuple[0];
+            }
+            return null;
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<{any} leftThen {any}>", .{ self.left, self.right });
+        }
+    };
+}
+
+fn RightThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = UnderlyingRight.ResultType;
+
+        underlying: AndThen(UnderlyingLeft, UnderlyingRight),
+
+        fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
+            if (try self.underlying.parse(cursor)) |tuple| {
+                return tuple[1];
+            }
+            return null;
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<{any} rightThen {any}>", .{ self.left, self.right });
+        }
+    };
+}
+
 fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
     return struct {
         pub const ResultType = Either(UnderlyingLeft.ResultType, UnderlyingRight.ResultType);
@@ -1009,6 +1145,29 @@ fn Logged(comptime Underlying: type, scope: @Type(.EnumLiteral)) type {
         }
     };
 }
+
+const End = struct {
+    pub const ResultType = void;
+
+    pub fn parse(_: End, cursor: *Cursor) anyerror!?void {
+        if (cursor.idx < cursor.buffer.items.len and cursor.buffer.items[cursor.idx..].len > 0) {
+            return null;
+        } else {
+            const v = cursor.reader.readByte() catch |err| {
+                switch (err) {
+                    error.EndOfStream => return,
+                    else => return err,
+                }
+            };
+            try cursor.buffer.append(v);
+            return null;
+        }
+    }
+
+    pub fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.writeAll("<End of input>");
+    }
+};
 
 test {
     std.testing.refAllDecls(@This());
