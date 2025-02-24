@@ -1,15 +1,13 @@
-//! This is a small example of the mathematics expression parser,
+//! This is a small example of a math expression parser,
 //! which parse only unsigned integers, brackets, [+-*/] operations,
 //! and no spaces.
 //!
 //! This example can be run with expression at first argument:
 //! ```
-//! zig build example -- "1+1"
+//! zig build expression -- "1+1"
 //! ```
 const std = @import("std");
-const parcom = @import("parcom");
-
-const P = parcom.Parsers;
+const p = @import("parcom");
 
 const Value = i8;
 
@@ -47,7 +45,7 @@ const Operation = enum {
 /// Product ← Value (('*' / '/') Value)*
 /// Value   ← [0-9]+ / '(' Expr ')'
 /// ```
-fn expr(alloc: std.mem.Allocator) !parcom.TaggedParser(Value) {
+fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
     // functions to transform parsers results
     const fns = struct {
         fn parseInt(_: void, str: [10:0]u8) anyerror!Value {
@@ -57,7 +55,7 @@ fn expr(alloc: std.mem.Allocator) !parcom.TaggedParser(Value) {
         fn valueFromParens(_: void, result: struct { u8, Value, u8 }) anyerror!Value {
             return result[1];
         }
-        fn valueFromEither(_: void, result: parcom.Either(Value, Value)) anyerror!Value {
+        fn valueFromEither(_: void, result: p.Either(Value, Value)) anyerror!Value {
             return switch (result) {
                 .left => result.left,
                 .right => result.right,
@@ -79,12 +77,12 @@ fn expr(alloc: std.mem.Allocator) !parcom.TaggedParser(Value) {
     };
 
     // brackets: Int <- (<exp>)
-    const brackets = P.tuple(.{ P.char('('), P.lazy(Value, alloc, expr), P.char(')') })
+    const brackets = p.tuple(.{ p.char('('), p.lazy(Value, alloc, expr), p.char(')') })
         .transform(Value, {}, fns.valueFromParens);
 
     // we can't use Parsers.int to parse numbers here to avoid consumption of the '-' and '+'
     // number: Int <- \d+
-    const number = P.range('0', '9').repeatToSentinelArray(1, 10)
+    const number = p.range('0', '9').repeatToSentinelArray(1, 10)
         .transform(Value, {}, fns.parseInt);
 
     // value: Int <- <number>|<brackets>
@@ -93,14 +91,14 @@ fn expr(alloc: std.mem.Allocator) !parcom.TaggedParser(Value) {
 
     // product: Int <- <value>([*/]<value>)*
     const product = blk: {
-        const operation = P.oneCharOf("*/").transform(Operation, {}, Operation.parse);
+        const operation = p.oneCharOf("*/").transform(Operation, {}, Operation.parse);
         break :blk value.andThen(operation.andThen(value).repeat(alloc))
             .transform(Value, alloc, fns.calculate);
     };
 
     // sum: Int <- <product>([+-]<product>)*
     const sum = blk: {
-        const operation = P.oneCharOf("+-").transform(Operation, {}, Operation.parse);
+        const operation = p.oneCharOf("+-").transform(Operation, {}, Operation.parse);
         break :blk product.andThen(operation.andThen(product).repeat(alloc))
             .transform(Value, alloc, fns.calculate);
     };
@@ -109,9 +107,9 @@ fn expr(alloc: std.mem.Allocator) !parcom.TaggedParser(Value) {
 }
 
 fn evaluate(alloc: std.mem.Allocator, expression: []const u8) !?Value {
-    const p = try expr(alloc);
-    defer p.deinit();
-    return try p.parseString(alloc, expression);
+    const parser = try expr(alloc);
+    defer parser.deinit();
+    return try parser.parseString(alloc, expression);
 }
 
 test "1+1" {

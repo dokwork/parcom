@@ -41,190 +41,183 @@
 //! 3.  The public wrapper `TaggedParser`, which erase the type of the underlying parser in `ParserCombinator`,
 //!     allowing for explicit type declaration in the code.
 //!
-//! The namespace `Parsers` provides a set of base parses.
-//!
 //! Github page: [https://github.com/dokwork/parcom](https://github.com/dokwork/parcom)
 const std = @import("std");
 
 const log = std.log.scoped(.parcom);
 
-/// Set of base parsers.
-pub const Parsers = struct {
-    /// Creates a parser that doesn't read any bytes from the input,
-    /// and always returns passed value as the result.
-    pub fn successfull(result: anytype) ParserCombinator(Successfull(@TypeOf(result))) {
-        return .{ .underlying = .{ .result = result } };
-    }
+/// Creates a parser that doesn't read any bytes from the input,
+/// and always returns passed value as the result.
+pub fn successfull(result: anytype) ParserCombinator(Successfull(@TypeOf(result))) {
+    return .{ .underlying = .{ .result = result } };
+}
 
-    /// Creates a parser that fails if the input buffer contains not handled items, or otherwise
-    /// tries to consume one byte from the input, and completes successfully if `EndOfStream`
-    /// happened. It similar to '$' in regexp.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     try std.testing.expectEqual({}, try Parsers.end().parseString(std.testing.allocator, ""));
-    ///     try std.testing.expectEqual(null, try Parsers.end().parseString(std.testing.allocator, "anything"));
-    /// }
-    /// ```
-    pub fn end() ParserCombinator(End) {
-        return .{ .implementation = .{} };
-    }
+/// Creates a parser that fails if the input buffer contains not handled items, or otherwise
+/// tries to consume one byte from the input, and completes successfully if `EndOfStream`
+/// happened. It similar to '$' in regexp.
+/// Example:
+/// ```zig
+/// test {
+///     try std.testing.expectEqual({}, try end().parseString(std.testing.allocator, ""));
+///     try std.testing.expectEqual(null, try end().parseString(std.testing.allocator, "anything"));
+/// }
+/// ```
+pub fn end() ParserCombinator(End) {
+    return .{ .implementation = .{} };
+}
 
-    /// Creates a parser that reads one byte from the input, and returns it as the result.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     try std.testing.expectEqual('a', try Parsers.anyChar().parseString(std.testing.allocator, "a"));
-    ///     try std.testing.expectEqual(null, try Parsers.anyChar().parseString(std.testing.allocator, ""));
-    /// }
-    /// ```
-    pub inline fn anyChar() ParserCombinator(AnyChar) {
-        return .{ .implementation = .{} };
-    }
+/// Creates a parser that reads one byte from the input, and returns it as the result.
+/// Example:
+/// ```zig
+/// test {
+///     try std.testing.expectEqual('a', try anyChar().parseString(std.testing.allocator, "a"));
+///     try std.testing.expectEqual(null, try anyChar().parseString(std.testing.allocator, ""));
+/// }
+/// ```
+pub inline fn anyChar() ParserCombinator(AnyChar) {
+    return .{ .implementation = .{} };
+}
 
-    /// Creates a parser that reads one byte from the input, and returns `C` as the
-    /// result if the same byte was read.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     try std.testing.expectEqual('a', try Parsers.anyChar().parseString(std.testing.allocator, "a"));
-    ///     try std.testing.expectEqual(null, try Parsers.anyChar().parseString(std.testing.allocator, ""));
-    /// }
-    /// ```
-    pub fn char(comptime C: u8) ParserCombinator(Const(AnyChar, C)) {
-        return .{ .implementation = .{ .underlying = AnyChar{} } };
-    }
+/// Creates a parser that reads one byte from the input, and returns `C` as the
+/// result if the same byte was read.
+/// Example:
+/// ```zig
+/// test {
+///     try std.testing.expectEqual('a', try anyChar().parseString(std.testing.allocator, "a"));
+///     try std.testing.expectEqual(null, try anyChar().parseString(std.testing.allocator, ""));
+/// }
+/// ```
+pub fn char(comptime C: u8) ParserCombinator(Const(AnyChar, C)) {
+    return .{ .implementation = .{ .underlying = AnyChar{} } };
+}
 
-    /// Creates a parser that reads one byte from the input and returns it as the result
-    /// if it is present in the chars set.
-    pub inline fn oneCharOf(comptime chars: []const u8) ParserCombinator(OneCharOf(chars)) {
-        return .{ .implementation = .{} };
-    }
+/// Creates a parser that reads one byte from the input and returns it as the result
+/// if it is present in the chars set.
+pub inline fn oneCharOf(comptime chars: []const u8) ParserCombinator(OneCharOf(chars)) {
+    return .{ .implementation = .{} };
+}
 
-    /// Creates a parser that reads bytes from the input into the buffer as long as they
-    /// are in the chars set "+-0123456789_boXABCDF". Then it attempts to parse
-    /// the buffer as an integer using `std.fmt.parseInt`.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     const p = Parsers.int(i8);
-    ///     const alloc = std.testing.allocator;
-    ///     try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
-    ///     try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
-    ///     try std.testing.expectEqual(-2, try p.parseString(alloc, "-2"));
-    ///     try std.testing.expectEqual(2, try p.parseString(alloc, "0b10"));
-    ///     try std.testing.expectEqual(8, try p.parseString(alloc, "0o10"));
-    ///     try std.testing.expectEqual(10, try p.parseString(alloc, "0XA"));
-    /// }
-    /// ```
-    pub inline fn int(comptime T: type) ParserCombinator(Int(T, 128)) {
-        return .{ .implementation = .{} };
-    }
+/// Creates a parser that reads bytes from the input into the buffer as long as they
+/// are in the chars set "+-0123456789_boXABCDF". Then it attempts to parse
+/// the buffer as an integer using `std.fmt.parseInt`.
+/// Example:
+/// ```zig
+/// test {
+///     const p = int(i8);
+///     const alloc = std.testing.allocator;
+///     try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
+///     try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
+///     try std.testing.expectEqual(-2, try p.parseString(alloc, "-2"));
+///     try std.testing.expectEqual(2, try p.parseString(alloc, "0b10"));
+///     try std.testing.expectEqual(8, try p.parseString(alloc, "0o10"));
+///     try std.testing.expectEqual(10, try p.parseString(alloc, "0XA"));
+/// }
+/// ```
+pub inline fn int(comptime T: type) ParserCombinator(Int(T, 128)) {
+    return .{ .implementation = .{} };
+}
 
-    /// Creates a parser that processes a char from the chars set ['a'..'z', 'A'..'Z', '0'..'9'].
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     const p = Parsers.letterOrNumber();
-    ///     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
-    ///     try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
-    ///     try std.testing.expectEqual('1', try p.parseString(std.testing.allocator, "1"));
-    ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "-"));
-    /// }
-    /// ```
-    pub inline fn letterOrNumber() ParserCombinator(Conditional("Letter or number", AnyChar, void)) {
-        return .{
-            .implementation = .{ .underlying = AnyChar{}, .context = {}, .conditionFn = struct {
-                fn isLetterOrNumber(_: void, value: u8) bool {
-                    return switch (value) {
-                        'a'...'z' => true,
-                        'A'...'Z' => true,
-                        '0'...'9' => true,
-                        else => false,
-                    };
+/// Creates a parser that processes a char from the chars set ['a'..'z', 'A'..'Z', '0'..'9'].
+/// Example:
+/// ```zig
+/// test {
+///     const p = letterOrNumber();
+///     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
+///     try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
+///     try std.testing.expectEqual('1', try p.parseString(std.testing.allocator, "1"));
+///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "-"));
+/// }
+/// ```
+pub inline fn letterOrNumber() ParserCombinator(Conditional("Letter or number", AnyChar, void)) {
+    return .{
+        .implementation = .{ .underlying = AnyChar{}, .context = {}, .conditionFn = struct {
+            fn isLetterOrNumber(_: void, value: u8) bool {
+                return switch (value) {
+                    'a'...'z' => true,
+                    'A'...'Z' => true,
+                    '0'...'9' => true,
+                    else => false,
+                };
+            }
+        }.isLetterOrNumber },
+    };
+}
+
+/// Creates a parser that processes only passed sequence of chars.
+/// Example:
+/// ```zig
+/// test {
+///     try std.testing.expectEqualStrings("foo", &((try word("foo").parseString(std.testing.allocator, "foo")).?));
+/// }
+/// ```
+pub inline fn word(comptime W: []const u8) ParserCombinator(Conditional(WordLabel(W), Array(AnyChar, W.len), []const u8)) {
+    return .{
+        .implementation = .{
+            .underlying = Array(AnyChar, W.len){ .underlying = AnyChar{} },
+            .context = W,
+            .conditionFn = struct {
+                fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
+                    return std.mem.eql(u8, expected, &parsed);
                 }
-            }.isLetterOrNumber },
-        };
-    }
+            }.compareWords,
+        },
+    };
+}
 
-    /// Creates a parser that processes only passed sequence of chars.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     try std.testing.expectEqualStrings("foo", &((try Parsers.word("foo").parseString(std.testing.allocator, "foo")).?));
-    /// }
-    /// ```
-    pub inline fn word(comptime W: []const u8) ParserCombinator(Conditional(WordLabel(W), Array(AnyChar, W.len), []const u8)) {
-        return .{
-            .implementation = .{
-                .underlying = Array(AnyChar, W.len){ .underlying = AnyChar{} },
-                .context = W,
-                .conditionFn = struct {
-                    fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
-                        return std.mem.eql(u8, expected, &parsed);
-                    }
-                }.compareWords,
-            },
-        };
+/// Creates a parser that processes characters within the ASCII range, where From is the lowest
+/// character in the ASCII table and To is the highest, inclusive.
+/// Example:
+/// ```zig
+/// test {
+///     const p = range('A', 'C');
+///     try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
+///     try std.testing.expectEqual('B', try p.parseString(std.testing.allocator, "B"));
+///     try std.testing.expectEqual('C', try p.parseString(std.testing.allocator, "C"));
+///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "a"));
+///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "D"));
+/// }
+/// ```
+pub inline fn range(comptime From: u8, To: u8) ParserCombinator(Conditional(RangeLabel(From, To), AnyChar, void)) {
+    comptime {
+        std.debug.assert(From < To);
     }
+    return .{
+        .implementation = .{
+            .underlying = AnyChar{},
+            .context = {},
+            .conditionFn = struct {
+                fn isInRange(_: void, value: u8) bool {
+                    return From <= value and value <= To;
+                }
+            }.isInRange,
+        },
+    };
+}
 
-    /// Creates a parser that processes characters within the ASCII range, where From is the lowest
-    /// character in the ASCII table and To is the highest, inclusive.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     const p = Parsers.range('A', 'C');
-    ///     try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
-    ///     try std.testing.expectEqual('B', try p.parseString(std.testing.allocator, "B"));
-    ///     try std.testing.expectEqual('C', try p.parseString(std.testing.allocator, "C"));
-    ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "a"));
-    ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "D"));
-    /// }
-    /// ```
-    pub inline fn range(comptime From: u8, To: u8) ParserCombinator(Conditional(RangeLabel(From, To), AnyChar, void)) {
-        comptime {
-            std.debug.assert(From < To);
-        }
-        return .{
-            .implementation = .{
-                .underlying = AnyChar{},
-                .context = {},
-                .conditionFn = struct {
-                    fn isInRange(_: void, value: u8) bool {
-                        return From <= value and value <= To;
-                    }
-                }.isInRange,
-            },
-        };
-    }
+/// Creates a parser that sequentially applies all passed parsers, and returns a tuple of
+/// all results.
+/// Example:
+/// ```zig
+/// test {
+///     const p = tuple(.{ char('a'), char('b'), char('c') });
+///     try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
+/// }
+/// ```
+pub inline fn tuple(parsers: anytype) ParserCombinator(Tuple(@TypeOf(parsers))) {
+    return .{ .implementation = .{ .parsers = parsers } };
+}
 
-    /// Creates a parser that sequentially applies all passed parsers, and returns a tuple of
-    /// all results.
-    /// Example:
-    /// ```zig
-    /// test {
-    ///     const p = Parsers.tuple(.{ Parsers.char('a'), Parsers.char('b'), Parsers.char('c') });
-    ///     try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
-    /// }
-    /// ```
-    pub inline fn tuple(parsers: anytype) ParserCombinator(Tuple(@TypeOf(parsers))) {
-        return .{ .implementation = .{ .parsers = parsers } };
-    }
-
-    /// Creates a parser that invokes the function `f` to create a tagged parser, which will be used
-    /// to parse the input. That tagged parser will be deinited at the end of parsing.
-    pub inline fn lazy(
-        comptime ResultType: type,
-        context: anytype,
-        f: *const fn (context: @TypeOf(context)) anyerror!TaggedParser(ResultType),
-    ) ParserCombinator(Lazy(@TypeOf(context), ResultType)) {
-        return .{
-            .implementation = Lazy(@TypeOf(context), ResultType){ .context = context, .buildParserFn = f },
-        };
-    }
-
-    // TODO: provide an example of using LazyParser
-};
+/// Creates a parser that invokes the function `f` to create a tagged parser, which will be used
+/// to parse the input. That tagged parser will be deinited at the end of parsing.
+pub inline fn lazy(
+    comptime ResultType: type,
+    context: anytype,
+    f: *const fn (context: @TypeOf(context)) anyerror!TaggedParser(ResultType),
+) ParserCombinator(Lazy(@TypeOf(context), ResultType)) {
+    return .{
+        .implementation = Lazy(@TypeOf(context), ResultType){ .context = context, .buildParserFn = f },
+    };
+}
 
 /// The final version of the parser with tagged result type.
 /// This version of the parser can be useful when the type of the
@@ -295,7 +288,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a');
+        ///     const p = char('a');
         ///     const tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
         ///     defer tg.deinit();
         ///     try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
@@ -355,7 +348,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').andThen(Parsers.char('b'));
+        ///     const p = char('a').andThen(char('b'));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
         ///     try std.testing.expectEqual(.{ 'a', 'b' }, try p.parseString(std.testing.allocator, "ab"));
@@ -373,7 +366,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').leftThen(Parsers.char('b'));
+        ///     const p = char('a').leftThen(char('b'));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
         ///     try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "ab"));
@@ -395,7 +388,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').rightThen(Parsers.char('b'));
+        ///     const p = char('a').rightThen(char('b'));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
         ///     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "ab"));
@@ -419,7 +412,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').orElse(Parsers.char('b'));
+        ///     const p = char('a').orElse(char('b'));
         ///     try std.testing.expectEqual(Either(u8, u8){ .left = 'a' }, try p.parseString(std.testing.allocator, "a"));
         ///     try std.testing.expectEqual(Either(u8, u8){ .right = 'b' }, try p.parseString(std.testing.allocator, "b"));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
@@ -436,7 +429,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').optional();
+        ///     const p = char('a').optional();
         ///     try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, p.parseString(std.testing.allocator, "a"));
         ///     try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString(std.testing.allocator, "b"));
         /// }
@@ -469,7 +462,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         ///     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         ///     defer arena.deinit();
         ///     const alloc = arena.allocator();
-        ///     const p = Parsers.char('a').repeat(alloc);
+        ///     const p = char('a').repeat(alloc);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(alloc, "")).?);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try p.parseString(alloc, "a")).?);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try p.parseString(alloc, "aa")).?);
@@ -486,7 +479,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.char('a').repeatToArray(2);
+        ///     const p = char('a').repeatToArray(2);
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "ab"));
         ///     try std.testing.expectEqualSlices(
@@ -513,12 +506,12 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p0 = Parsers.char('a').repeatToSentinelArray(0, 2);
+        ///     const p0 = char('a').repeatToSentinelArray(0, 2);
         ///     //
         ///     var result: [2:0]u8 = (try p0.parseString(std.testing.allocator, "")).?;
         ///     try std.testing.expectEqual(0, result[0]);
         ///     //
-        ///     const p = Parsers.char('a').repeatToSentinelArray(1, 2);
+        ///     const p = char('a').repeatToSentinelArray(1, 2);
         ///     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
         ///     //
         ///     result = (try p.parseString(std.testing.allocator, "ab")).?;
@@ -567,7 +560,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = Parsers.anyChar().repeatToArray(2).transform(u8, {}, struct {
+        ///     const p = anyChar().repeatToArray(2).transform(u8, {}, struct {
         ///         fn parseInt(_: void, arr: [2]u8) anyerror!u8 {
         ///             return try std.fmt.parseInt(u8, &arr, 10);
         ///         }
@@ -900,8 +893,8 @@ fn LeftThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
         underlying: AndThen(UnderlyingLeft, UnderlyingRight),
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
-            if (try self.underlying.parse(cursor)) |tuple| {
-                return tuple[0];
+            if (try self.underlying.parse(cursor)) |tp| {
+                return tp[0];
             }
             return null;
         }
@@ -921,8 +914,8 @@ fn RightThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
         underlying: AndThen(UnderlyingLeft, UnderlyingRight),
 
         fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
-            if (try self.underlying.parse(cursor)) |tuple| {
-                return tuple[1];
+            if (try self.underlying.parse(cursor)) |tp| {
+                return tp[1];
             }
             return null;
         }
@@ -1192,24 +1185,24 @@ test {
 // test("Parser <name as in Parsers> example")
 
 test "Parser end example" {
-    try std.testing.expectEqual({}, try Parsers.end().parseString(std.testing.allocator, ""));
-    try std.testing.expectEqual(null, try Parsers.end().parseString(std.testing.allocator, "anything"));
+    try std.testing.expectEqual({}, try end().parseString(std.testing.allocator, ""));
+    try std.testing.expectEqual(null, try end().parseString(std.testing.allocator, "anything"));
 }
 
 test "Parser anyChar example" {
-    try std.testing.expectEqual('a', try Parsers.anyChar().parseString(std.testing.allocator, "a"));
-    try std.testing.expectEqual(null, try Parsers.anyChar().parseString(std.testing.allocator, ""));
+    try std.testing.expectEqual('a', try anyChar().parseString(std.testing.allocator, "a"));
+    try std.testing.expectEqual(null, try anyChar().parseString(std.testing.allocator, ""));
 }
 
 test "Parser char example" {
-    const p = Parsers.char('a');
+    const p = char('a');
     try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "a"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "b"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
 }
 
 test "Parser oneOfChars example" {
-    const p = Parsers.oneCharOf("ab");
+    const p = oneCharOf("ab");
 
     try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "a"));
     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
@@ -1217,7 +1210,7 @@ test "Parser oneOfChars example" {
 }
 
 test "Parser int example" {
-    const p = Parsers.int(i8);
+    const p = int(i8);
     const alloc = std.testing.allocator;
     try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
     try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
@@ -1234,7 +1227,7 @@ test "Parser int example" {
 }
 
 test "Parser letterOrNumber example" {
-    const p = Parsers.letterOrNumber();
+    const p = letterOrNumber();
     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "b"));
     try std.testing.expectEqual('A', try p.parseString(std.testing.allocator, "A"));
     try std.testing.expectEqual('1', try p.parseString(std.testing.allocator, "1"));
@@ -1242,11 +1235,11 @@ test "Parser letterOrNumber example" {
 }
 
 test "Parser word example" {
-    try std.testing.expectEqualStrings("foo", &((try Parsers.word("foo").parseString(std.testing.allocator, "foo")).?));
+    try std.testing.expectEqualStrings("foo", &((try word("foo").parseString(std.testing.allocator, "foo")).?));
 }
 
 test "Parser range example" {
-    const p = Parsers.range('A', 'C');
+    const p = range('A', 'C');
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "a"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "b"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "c"));
@@ -1257,7 +1250,7 @@ test "Parser range example" {
 }
 
 test "Parser tuple example" {
-    const p = Parsers.tuple(.{ Parsers.char('a'), Parsers.char('b'), Parsers.char('c') });
+    const p = tuple(.{ char('a'), char('b'), char('c') });
     try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
 }
 
@@ -1267,7 +1260,7 @@ test "Parser tuple example" {
 // test("<name of the method in the ParserCombinator> example")
 
 test "tagged example" {
-    const p = Parsers.char('a');
+    const p = char('a');
     const tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
     defer tg.deinit();
 
@@ -1275,28 +1268,28 @@ test "tagged example" {
 }
 
 test "andThen example" {
-    const p = Parsers.char('a').andThen(Parsers.char('b'));
+    const p = char('a').andThen(char('b'));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
     try std.testing.expectEqual(.{ 'a', 'b' }, try p.parseString(std.testing.allocator, "ab"));
 }
 
 test "leftThen example" {
-    const p = Parsers.char('a').leftThen(Parsers.char('b'));
+    const p = char('a').leftThen(char('b'));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
     try std.testing.expectEqual('a', try p.parseString(std.testing.allocator, "ab"));
 }
 
 test "rightThen example" {
-    const p = Parsers.char('a').rightThen(Parsers.char('b'));
+    const p = char('a').rightThen(char('b'));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "aa"));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "bb"));
     try std.testing.expectEqual('b', try p.parseString(std.testing.allocator, "ab"));
 }
 
 test "orElse example" {
-    const p = Parsers.char('a').orElse(Parsers.char('b'));
+    const p = char('a').orElse(char('b'));
 
     try std.testing.expectEqual(Either(u8, u8){ .left = 'a' }, try p.parseString(std.testing.allocator, "a"));
     try std.testing.expectEqual(Either(u8, u8){ .right = 'b' }, try p.parseString(std.testing.allocator, "b"));
@@ -1304,7 +1297,7 @@ test "orElse example" {
 }
 
 test "optional example" {
-    const p = Parsers.char('a').optional();
+    const p = char('a').optional();
     try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, p.parseString(std.testing.allocator, "a"));
     try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString(std.testing.allocator, "b"));
 }
@@ -1314,7 +1307,7 @@ test "repeat example" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const p = Parsers.char('a').repeat(alloc);
+    const p = char('a').repeat(alloc);
 
     try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(alloc, "")).?);
     try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try p.parseString(alloc, "a")).?);
@@ -1328,7 +1321,7 @@ test "parse a long sequence to slice" {
     for (0..sequence.len) |i| {
         sequence[i] = 'a';
     }
-    const p = Parsers.char('a').repeat(std.testing.allocator);
+    const p = char('a').repeat(std.testing.allocator);
     // when:
     const result = (try p.parseString(std.testing.allocator, &sequence)).?;
     defer std.testing.allocator.free(result);
@@ -1337,7 +1330,7 @@ test "parse a long sequence to slice" {
 }
 
 test "repeatToArray example" {
-    const p = Parsers.char('a').repeatToArray(2);
+    const p = char('a').repeatToArray(2);
 
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, "ab"));
@@ -1354,12 +1347,12 @@ test "repeatToArray example" {
 }
 
 test "repeatToSentinelArray example" {
-    const p0 = Parsers.char('a').repeatToSentinelArray(0, 2);
+    const p0 = char('a').repeatToSentinelArray(0, 2);
 
     var result: [2:0]u8 = (try p0.parseString(std.testing.allocator, "")).?;
     try std.testing.expectEqual(0, result[0]);
 
-    const p = Parsers.char('a').repeatToSentinelArray(1, 2);
+    const p = char('a').repeatToSentinelArray(1, 2);
     try std.testing.expectEqual(null, try p.parseString(std.testing.allocator, ""));
 
     result = (try p.parseString(std.testing.allocator, "ab")).?;
@@ -1373,7 +1366,7 @@ test "repeatToSentinelArray example" {
 }
 
 test "transform example" {
-    const p = Parsers.anyChar().repeatToArray(2).transform(u8, {}, struct {
+    const p = anyChar().repeatToArray(2).transform(u8, {}, struct {
         fn parseInt(_: void, arr: [2]u8) anyerror!u8 {
             return try std.fmt.parseInt(u8, &arr, 10);
         }
@@ -1381,3 +1374,5 @@ test "transform example" {
 
     try std.testing.expectEqual(42, try p.parseString(std.testing.allocator, "42"));
 }
+
+// TODO: provide an example of using LazyParser
