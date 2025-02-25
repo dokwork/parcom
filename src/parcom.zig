@@ -22,19 +22,6 @@
 
 //! This library provides an implementation of the parser combinators.
 //!
-//! An implementation of the parser should follow this interface:
-//! ```zig
-//! struct {
-//!     const Self = @This();
-//!
-//!     /// The type of the result when parsing is successful
-//!     pub const ResultType: type;
-//!
-//!     /// Should get bytes from the reader and puts it to the buffer if they were
-//!     /// not successfully parsed, or return the result of parsing.
-//!     fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType
-//! }
-//! ```
 //! Three different types of parser implementations exist:
 //! 1.  The inner parser implementations, which contain the logic for parsing the input.
 //! 2.  The public wrapper `ParserCombinator`, which provides methods to combine parsers and create new ones.
@@ -208,7 +195,39 @@ pub inline fn tuple(parsers: anytype) ParserCombinator(Tuple(@TypeOf(parsers))) 
 }
 
 /// Creates a parser that invokes the function `f` to create a tagged parser, which will be used
-/// to parse the input. That tagged parser will be deinited at the end of parsing.
+/// to parse the input. That tagged parser will be deinited at the end of parsing if the destructor is provided.
+/// ```zig
+/// test {
+///    var result = std.ArrayList(u8).init(std.testing.allocator);
+///    defer result.deinit();
+///    // Grammar:
+///    // List <- Cons | Nil
+///    // Cons <- '(' Int List ')'
+///    // Nil <- "Nil"
+///    const parser = try struct {
+///        // this parser accumulates the numbers from an input to the list in reverse order
+///        // for simplicity of the example
+///        fn reversedList(accumulator: *std.ArrayList(u8)) !TaggedParser(void) {
+///            const nil = word("Nil");
+///            const cons = tuple(.{ char('('), int(u8), lazy(void, accumulator, reversedList), char(')') });
+///            const list = cons.orElse(nil);
+///            var parser = list.transform(void, accumulator, struct {
+///                fn append(acc: *std.ArrayList(u8), value: @TypeOf(list).ResultType) !void {
+///                    switch (value) {
+///                        .right => {},
+///                        .left => |cns| try acc.append(cns[1]),
+///                    }
+///                }
+///            }.append);
+///            return parser.taggedAllocated(accumulator.allocator);
+///        }
+///    }.reversedList(&result);
+///    defer parser.deinit();
+///    //
+///    std.debug.assert(try parser.parseString(std.testing.allocator, "(1(2(3Nil))))") != null);
+///    try std.testing.expectEqualSlices(u8, &.{ 3, 2, 1 }, result.items);
+///}
+/// ```
 pub inline fn lazy(
     comptime ResultType: type,
     context: anytype,
@@ -228,22 +247,27 @@ pub fn TaggedParser(comptime TaggedType: type) type {
 
         const Self = @This();
 
-        alloc: std.mem.Allocator,
+        const Destructor = struct {
+            alloc: std.mem.Allocator,
+            deinitFn: *const fn (alloc: std.mem.Allocator, underlying: *const anyopaque) void,
+        };
+
         underlying: *const anyopaque,
         parseFn: *const fn (parser: *const anyopaque, cursor: *Cursor) anyerror!?ResultType,
-        deinitFn: *const fn (alloc: std.mem.Allocator, underlying: *const anyopaque) void,
+        destructor: ?Destructor = null,
 
         inline fn parse(self: Self, cursor: *Cursor) anyerror!?ResultType {
             return try self.parseFn(self.underlying, cursor);
         }
 
-        /// Deallocates memory with underlying parser.
-        pub fn deinit(self: Self) void {
-            self.deinitFn(self.alloc, self.underlying);
+        /// Deallocates memory with underlying parser if it was allocated on heap.
+        pub inline fn deinit(self: Self) void {
+            if (self.destructor) |ds|
+                ds.deinitFn(ds.alloc, self.underlying);
         }
 
         /// This method is similar to the same method in `ParserCombinator`.
-        fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
+        pub fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var cursor = Cursor.init(alloc, reader);
             defer cursor.deinit();
             return try self.parse(&cursor);
@@ -277,11 +301,24 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// The underlying implementation of the parser
         implementation: Implementation,
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("{any}", .{self.implementation});
         }
 
-        /// Allocates memory for underlying implementation by the `alloc`,
+        /// Wraps the self parser into a tagged version, allowing the type of the underlying parser
+        /// to be erased. Be cautious with the lifetime of the self parser. In most cases, the
+        /// `taggedAllocated` method is safer.
+        pub fn tagged(self: *Self) !TaggedParser(ResultType) {
+            const fns = struct {
+                fn parse(ptr: *const anyopaque, cursor: *Cursor) anyerror!?ResultType {
+                    const s: *const Self = @ptrCast(@alignCast(ptr));
+                    return try s.parse(cursor);
+                }
+            };
+            return .{ .underlying = self, .parseFn = fns.parse };
+        }
+
+        /// Allocates memory for underlying implementation using `alloc`
         /// and copies underlying parser to that memory. It makes possible to erase the type of the
         /// underlying parser. The `deinit` method of the returned TaggedParser should be invoked
         /// to free allocated memory.
@@ -289,12 +326,12 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// ```zig
         /// test {
         ///     const p = char('a');
-        ///     const tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
+        ///     const tg: TaggedParser(u8) = try p.taggedAllocated(std.testing.allocator);
         ///     defer tg.deinit();
         ///     try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
         /// }
         /// ```
-        pub fn tagged(self: Self, alloc: std.mem.Allocator) !TaggedParser(ResultType) {
+        pub fn taggedAllocated(self: Self, alloc: std.mem.Allocator) !TaggedParser(ResultType) {
             const fns = struct {
                 fn parse(ptr: *const anyopaque, cursor: *Cursor) anyerror!?ResultType {
                     const implementation: *const Implementation = @ptrCast(@alignCast(ptr));
@@ -308,10 +345,12 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             const on_heap = try alloc.create(Implementation);
             on_heap.* = self.implementation;
             return .{
-                .alloc = alloc,
                 .underlying = on_heap,
                 .parseFn = fns.parse,
-                .deinitFn = fns.deinit,
+                .destructor = .{
+                    .alloc = alloc,
+                    .deinitFn = fns.deinit,
+                },
             };
         }
 
@@ -319,7 +358,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             return try self.implementation.parse(cursor);
         }
 
-        fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
+        pub fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var cursor = Cursor.init(alloc, reader);
             defer cursor.deinit();
             return try self.parse(&cursor);
@@ -607,7 +646,7 @@ const Cursor = struct {
         self.buffer.deinit();
     }
 
-    pub fn format(self: Cursor, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    fn format(self: Cursor, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         if (self.idx < self.buffer.items.len) {
             const left_bound = if (self.idx == 0) 0 else @min(self.idx - 1, self.buffer.items.len);
             const right_bound = @min(self.idx + 1, self.buffer.items.len);
@@ -685,7 +724,7 @@ const AnyChar = struct {
         }
     }
 
-    pub fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try writer.writeAll("<any char>");
     }
 };
@@ -709,7 +748,7 @@ fn Conditional(comptime Label: []const u8, Underlying: type, Context: type) type
             return null;
         }
 
-        pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll(std.fmt.comptimePrint("<{s}>", .{Label}));
         }
     };
@@ -732,7 +771,7 @@ fn Const(comptime Underlying: type, comptime template: Underlying.ResultType) ty
             return null;
         }
 
-        pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll(std.fmt.comptimePrint("<Constant {any}>", .{template}));
         }
     };
@@ -759,7 +798,7 @@ fn Slice(comptime Underlying: type) type {
             return try self.alloc.realloc(buffer, i);
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Slice of {s}>", .{self.underlying});
         }
 
@@ -791,7 +830,7 @@ fn Array(comptime Underlying: type, count: u8) type {
             return result;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Array of {s}>", .{self.underlying});
         }
     };
@@ -825,7 +864,7 @@ fn SentinelArray(comptime Underlying: type, min_count: u8, max_count: u8) type {
             return result;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<SentinelArray of {s}>", .{self.underlying});
         }
     };
@@ -848,7 +887,7 @@ fn Collect(comptime Underlying: type, Collector: type) type {
             return self.collector;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Collect {any} to {any}>", .{ @typeName(Collector), self.underlying });
         }
     };
@@ -878,7 +917,7 @@ fn AndThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
             }
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<{any} andThen {any}>", .{ self.left, self.right });
         }
     };
@@ -899,7 +938,7 @@ fn LeftThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
             return null;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<{any} leftThen {any}>", .{ self.left, self.right });
         }
     };
@@ -920,7 +959,7 @@ fn RightThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
             return null;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<{any} rightThen {any}>", .{ self.left, self.right });
         }
     };
@@ -948,7 +987,7 @@ fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
             return null;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<{any} orElse {any}>", .{ self.left, self.right });
         }
     };
@@ -1004,7 +1043,7 @@ fn Tuple(comptime Underlyings: type) type {
             return result;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Tuple of {any}>", .{self.parsers});
         }
     };
@@ -1045,7 +1084,7 @@ fn OneCharOf(comptime chars: []const u8) type {
             return std.math.order(lhs, rhs);
         }
 
-        pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<One char of \"{s}\">", .{chars});
         }
     };
@@ -1070,7 +1109,7 @@ fn Transform(comptime UnderlyingA: type, Context: type, B: type) type {
             return null;
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Transform result of the {any} to {any}>", .{ self.underlying, @typeName(B) });
         }
     };
@@ -1086,7 +1125,12 @@ fn Int(comptime T: type, max_buf_size: usize) type {
             const orig_idx = cursor.idx;
             var buf: [max_buf_size]u8 = undefined;
             var idx: usize = 0;
-            const symbols = OneCharOf("+-0123456789_boXABCDF"){};
+            const sign = OneCharOf("+-"){};
+            if (try sign.parse(cursor)) |sg| {
+                buf[0] = sg;
+                idx += 1;
+            }
+            const symbols = OneCharOf("0123456789_boXABCDF"){};
             while (try symbols.parse(cursor)) |s| : (idx += 1) {
                 buf[idx] = s;
             }
@@ -1096,7 +1140,7 @@ fn Int(comptime T: type, max_buf_size: usize) type {
             };
         }
 
-        pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll("<Integer>");
         }
     };
@@ -1116,7 +1160,7 @@ fn Lazy(comptime Context: type, Type: type) type {
             return try parser.parse(cursor);
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Lazy {any}>", .{self.buildParserFn});
         }
     };
@@ -1146,7 +1190,7 @@ fn Logged(comptime Underlying: type, scope: @Type(.EnumLiteral)) type {
             }
         }
 
-        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.print("<Logged with scope {s} {any}>", .{ @tagName(scope), self.underlying });
         }
     };
@@ -1170,7 +1214,7 @@ const End = struct {
         }
     }
 
-    pub fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+    fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         try writer.writeAll("<End of input>");
     }
 };
@@ -1254,6 +1298,37 @@ test "Parser tuple example" {
     try std.testing.expectEqual(.{ 'a', 'b', 'c' }, (try p.parseString(std.testing.allocator, "abcdef")).?);
 }
 
+test "Parser lazy example" {
+    var result = std.ArrayList(u8).init(std.testing.allocator);
+    defer result.deinit();
+    // Grammar:
+    // List <- Cons | Nil
+    // Cons <- '(' Int List ')'
+    // Nil <- "Nil"
+    const parser = try struct {
+        // this parser accumulates the numbers from an input to the list in reverse order
+        // for simplicity of the example
+        fn reversedList(accumulator: *std.ArrayList(u8)) !TaggedParser(void) {
+            const nil = word("Nil");
+            const cons = tuple(.{ char('('), int(u8), lazy(void, accumulator, reversedList), char(')') });
+            const list = cons.orElse(nil);
+            var parser = list.transform(void, accumulator, struct {
+                fn append(acc: *std.ArrayList(u8), value: @TypeOf(list).ResultType) !void {
+                    switch (value) {
+                        .right => {},
+                        .left => |cns| try acc.append(cns[1]),
+                    }
+                }
+            }.append);
+            return parser.taggedAllocated(accumulator.allocator);
+        }
+    }.reversedList(&result);
+    defer parser.deinit();
+
+    std.debug.assert(try parser.parseString(std.testing.allocator, "(1(2(3Nil))))") != null);
+    try std.testing.expectEqualSlices(u8, &.{ 3, 2, 1 }, result.items);
+}
+
 // ----- Tests for combinators -----
 // For every combinator from the `ParserCombinator` the test with a simple example
 // should exist and follow such format:
@@ -1261,7 +1336,7 @@ test "Parser tuple example" {
 
 test "tagged example" {
     const p = char('a');
-    const tg: TaggedParser(u8) = try p.tagged(std.testing.allocator);
+    const tg: TaggedParser(u8) = try p.taggedAllocated(std.testing.allocator);
     defer tg.deinit();
 
     try std.testing.expectEqual('a', try tg.parseString(std.testing.allocator, "a"));
@@ -1374,5 +1449,3 @@ test "transform example" {
 
     try std.testing.expectEqual(42, try p.parseString(std.testing.allocator, "42"));
 }
-
-// TODO: provide an example of using LazyParser

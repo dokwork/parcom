@@ -103,7 +103,7 @@ fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
             .transform(Value, alloc, fns.calculate);
     };
 
-    return try sum.tagged(alloc);
+    return try sum.taggedAllocated(alloc);
 }
 
 fn evaluate(alloc: std.mem.Allocator, expression: []const u8) !?Value {
