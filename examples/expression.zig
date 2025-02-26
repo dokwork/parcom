@@ -1,5 +1,5 @@
 //! This is a small example of a math expression parser,
-//! which parse only unsigned integers, brackets, [+-*/] operations,
+//! which parse only unsigned integers, brackets, [+-*/] **binary** operations,
 //! and no spaces.
 //!
 //! This example can be run with expression at first argument:
@@ -109,7 +109,7 @@ fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
 fn evaluate(alloc: std.mem.Allocator, expression: []const u8) !?Value {
     const parser = try expr(alloc);
     defer parser.deinit();
-    return try parser.parseString(alloc, expression);
+    return try parser.parseString(expression);
 }
 
 test "1+1" {
