@@ -77,7 +77,7 @@ fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
     };
 
     // brackets: Int <- (<exp>)
-    const brackets = p.tuple(.{ p.char('('), p.lazy(Value, alloc, expr), p.char(')') })
+    const brackets = p.tuple(.{ p.char('('), p.deferred(Value, alloc, expr), p.char(')') })
         .transform(Value, {}, fns.valueFromParens);
 
     // we can't use Parsers.int to parse numbers here to avoid consumption of the '-' and '+'
