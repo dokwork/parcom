@@ -180,10 +180,12 @@ test letterOrNumber {
 ///     try std.testing.expectEqualStrings("foo", &((try word("foo").parseString("foo")).?));
 /// }
 /// ```
-pub inline fn word(comptime W: []const u8) ParserCombinator(Conditional(WordLabel(W), Array(AnyChar, W.len), []const u8)) {
+pub inline fn word(comptime W: []const u8) ParserCombinator(
+    Conditional(WordLabel(W), ArrayExactly(AnyChar, W.len), []const u8),
+) {
     return .{
         .implementation = .{
-            .underlying = Array(AnyChar, W.len){ .underlying = AnyChar{} },
+            .underlying = ArrayExactly(AnyChar, W.len){ .underlying = AnyChar{} },
             .context = W,
             .conditionFn = struct {
                 fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
@@ -336,6 +338,15 @@ test deferred {
 /// The final version of the parser with tagged result type.
 /// This version of the parser can be useful when the type of the
 /// parser should be provided manually, as example, in the function signature.
+/// Example:
+/// ```zig
+/// test {
+///     var p = char('a');
+///     const tg: TaggedParser(u8) = try p.tagged();
+///     defer tg.deinit();
+///     try std.testing.expectEqual('a', try tg.parseString("a"));
+/// }
+/// ```
 pub fn TaggedParser(comptime TaggedType: type) type {
     return struct {
         pub const ResultType = TaggedType;
@@ -364,7 +375,7 @@ pub fn TaggedParser(comptime TaggedType: type) type {
         /// This method is similar to the same method in `ParserCombinator`.
         pub fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var input = try Input.buffered(alloc, reader);
-            defer input.deinit();
+            defer input.impl.buffered.deinit();
             return try self.parse(&input);
         }
 
@@ -382,8 +393,8 @@ pub fn TaggedParser(comptime TaggedType: type) type {
 }
 
 test TaggedParser {
-    const p = char('a');
-    const tg: TaggedParser(u8) = try p.taggedAllocated(std.testing.allocator);
+    var p = char('a');
+    const tg: TaggedParser(u8) = try p.tagged();
     defer tg.deinit();
 
     try std.testing.expectEqual('a', try tg.parseString("a"));
@@ -410,7 +421,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
 
         pub fn parseAnyReader(self: Self, alloc: std.mem.Allocator, reader: std.io.AnyReader) !?ResultType {
             var input = try Input.buffered(alloc, reader);
-            defer input.deinit();
+            defer input.impl.buffered.deinit();
             return try self.parse(&input);
         }
 
@@ -617,7 +628,13 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             context: anytype,
             condition: *const fn (ctx: @TypeOf(context), value: @TypeOf(self).ResultType) bool,
         ) ParserCombinator(Conditional("Such that", @TypeOf(self), @TypeOf(context))) {
-            return .{ .implementation = .{ .underlying = self.implementation, .context = context, .conditionFn = condition } };
+            return .{
+                .implementation = .{
+                    .underlying = self.implementation,
+                    .context = context,
+                    .conditionFn = condition,
+                },
+            };
         }
 
         /// Wraps the self parser in a new one that repeat it until the underlying parser fails.
@@ -629,14 +646,20 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         ///     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         ///     defer arena.deinit();
         ///     const alloc = arena.allocator();
-        ///     const p = char('a').repeat(alloc);
+        ///     const p = char('a').repeat(alloc, .{});
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString(alloc, "")).?);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try p.parseString(alloc, "a")).?);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try p.parseString(alloc, "aa")).?);
         ///     try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try p.parseString(alloc, "aab")).?);
         /// }
         /// ```
-        pub inline fn repeat(self: Self, alloc: std.mem.Allocator) ParserCombinator(Slice(Implementation)) {
+        /// See documentation for `RepeatOptions` for more details.
+        pub inline fn repeat(
+            self: Self,
+            alloc: std.mem.Allocator,
+            comptime options: RepeatOptions,
+        ) ParserCombinator(Slice(Implementation, options)) {
+            RepeatOptions.validate(options);
             return .{ .implementation = .{ .underlying = self.implementation, .alloc = alloc } };
         }
 
@@ -644,7 +667,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
             defer arena.deinit();
 
-            const p = char('a').repeat(arena.allocator());
+            const p = char('a').repeat(arena.allocator(), .{});
 
             try std.testing.expectEqualSlices(u8, &[_]u8{}, (try p.parseString("")).?);
             try std.testing.expectEqualSlices(u8, &[_]u8{'a'}, (try p.parseString("a")).?);
@@ -652,46 +675,66 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, (try p.parseString("aab")).?);
         }
 
-        /// Wraps the self parser in a new one that repeat it until the `count` results will be parsed,
-        /// or the underlying parser fails. If the underlying parser fails before producing `count`
-        /// results, the new parser fails. Otherwise, an array containing the count items is returned.
+        /// Wraps the self parser in a new one, depending on the provided `options`. Possible valid
+        /// options are:
+        /// 1. Unsigned integer - if the `options` is a number, the new parser will be
+        /// repeated until the passed number of items will be parsed, or the underlying parser
+        /// fails. If the underlying parser fails before parsing enough items, the new parser
+        /// fails. Otherwise, an array containing the count items is returned.
+        /// 2. `RepeatOptions` - the new parser will be repeated until the `max_count` items will be
+        /// parsed, or the underlying parser fails. If the underlying parser fails before producing
+        /// `min_count` results, the new parser fails. Otherwise, a tuple with an array with size
+        /// `max_count` and the count of parsed items will be returned.
         /// Example:
         /// ```zig
         /// test {
-        ///     const p = char('a').repeatToArray(2);
-        ///     try std.testing.expectEqual(null, try p.parseString(""));
-        ///     try std.testing.expectEqual(null, try p.parseString("ab"));
+        ///     const p1 = char('a').repeatToArray(2);
         ///     try std.testing.expectEqualSlices(
         ///         u8,
         ///         &[_]u8{ 'a', 'a' },
-        ///         &((try p.parseString("aa")).?),
+        ///         &((try p1.parseString("aa")).?),
         ///     );
         ///     try std.testing.expectEqualSlices(
         ///         u8,
         ///         &[_]u8{ 'a', 'a' },
-        ///         &((try p.parseString("aaa")).?),
+        ///         &((try p1.parseString("aaa")).?),
         ///     );
+        ///     //
+        ///     const p2 = char('a').repeatToArray(.{ .min_count = 2, .max_count = 3 });
+        ///     try std.testing.expectEqual(null, try p2.parseString("a"));
+        ///     const result = (try p2.parseString("aa")).?;
+        ///     try std.testing.expectEqual(2, result.count);
+        ///     try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, result.items[0..result.count]);
         /// }
         /// ```
-        pub inline fn repeatToArray(self: Self, comptime count: u8) ParserCombinator(Array(Implementation, count)) {
+        pub inline fn repeatToArray(
+            self: Self,
+            comptime options: anytype,
+        ) ParserCombinator(Array(Implementation, options)) {
             return .{ .implementation = .{ .underlying = self.implementation } };
         }
 
         test repeatToArray {
-            const p = char('a').repeatToArray(2);
-
-            try std.testing.expectEqual(null, try p.parseString(""));
-            try std.testing.expectEqual(null, try p.parseString("ab"));
+            const p1 = char('a').repeatToArray(2);
+            //
+            try std.testing.expectEqual(null, try p1.parseString(""));
+            try std.testing.expectEqual(null, try p1.parseString("ab"));
             try std.testing.expectEqualSlices(
                 u8,
                 &[_]u8{ 'a', 'a' },
-                &((try p.parseString("aa")).?),
+                &((try p1.parseString("aa")).?),
             );
             try std.testing.expectEqualSlices(
                 u8,
                 &[_]u8{ 'a', 'a' },
-                &((try p.parseString("aaa")).?),
+                &((try p1.parseString("aaa")).?),
             );
+            //
+            const p2 = char('a').repeatToArray(.{ .min_count = 2, .max_count = 3 });
+            try std.testing.expectEqual(null, try p2.parseString("a"));
+            const result = (try p2.parseString("aa")).?;
+            try std.testing.expectEqual(2, result.count);
+            try std.testing.expectEqualSlices(u8, &[_]u8{ 'a', 'a' }, result.items[0..result.count]);
         }
 
         /// Wraps the self parser in a new one that repeat it until the `max_count` results will be parsed,
@@ -702,12 +745,12 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Example:
         /// ```zig
         /// test {
-        ///     const p0 = char('a').repeatToSentinelArray(0, 2);
+        ///     const p0 = char('a').repeatToSentinelArray(.{ .max_count = 2 });
         ///     //
         ///     var result: [2:0]u8 = (try p0.parseString("")).?;
         ///     try std.testing.expectEqual(0, result[0]);
         ///     //
-        ///     const p = char('a').repeatToSentinelArray(1, 2);
+        ///     const p = char('a').repeatToSentinelArray(.{ .min_count = 1, .max_count = 2 });
         ///     try std.testing.expectEqual(null, try p.parseString(""));
         ///     //
         ///     result = (try p.parseString("ab")).?;
@@ -722,25 +765,19 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// ```
         pub inline fn repeatToSentinelArray(
             self: Self,
-            comptime min_count: u8,
-            comptime max_count: u8,
-        ) ParserCombinator(SentinelArray(Implementation, min_count, max_count)) {
-            // because of https://github.com/ziglang/zig/pull/21509
-            const info = @typeInfo(ResultType);
-            switch (info) {
-                .Int => {},
-                else => @compileError("Repeating to sentinel array is possible only for numbers"),
-            }
+            comptime options: RepeatOptions,
+        ) ParserCombinator(SentinelArray(Implementation, options)) {
+            RepeatOptions.validate(options);
             return .{ .implementation = .{ .underlying = self.implementation } };
         }
 
         test repeatToSentinelArray {
-            const p0 = char('a').repeatToSentinelArray(0, 2);
+            const p0 = char('a').repeatToSentinelArray(.{ .max_count = 2 });
 
             var result: [2:0]u8 = (try p0.parseString("")).?;
             try std.testing.expectEqual(0, result[0]);
 
-            const p = char('a').repeatToSentinelArray(1, 2);
+            const p = char('a').repeatToSentinelArray(.{ .min_count = 1, .max_count = 2 });
             try std.testing.expectEqual(null, try p.parseString(""));
 
             result = (try p.parseString("ab")).?;
@@ -753,14 +790,33 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(0, result[2]);
         }
 
-        /// Wraps the self parser in a new one that repeat the underlying parser until if fails.
+        /// Wraps the self parser in a new one that repeat the underlying parser until it fails,
+        /// or consumed `max_count` items, if that limit is specified in the provided `RepeatOptions`.
         /// It applies the function `add_to_collection` to the every parsed item.
-        pub inline fn collectTo(
+        /// Example:
+        /// ```zig
+        /// test {
+        ///    var map = std.AutoHashMap(u8, u8).init(std.testing.allocator);
+        ///    defer map.deinit();
+        ///    //
+        ///    const p = anyChar().andThen(anyChar()).repeatTo(&map, .{}, struct {
+        ///        fn put(container: *std.AutoHashMap(u8, u8), values: struct { u8, u8 }) anyerror!void {
+        ///            try container.put(values[0], values[1]);
+        ///        }
+        ///    }.put);
+        ///    //
+        ///    const result = (try p.parseString("1a2b")).?;
+        ///    try std.testing.expectEqual('a', result.get('1'));
+        ///    try std.testing.expectEqual('b', result.get('2'));
+        /// }
+        /// ```
+        pub inline fn repeatTo(
             self: Self,
-            comptime Collector: type,
-            collector: *Collector,
-            add_to_collection: *const fn (ctx: *Collector, ResultType) anyerror!void,
-        ) ParserCombinator(Collect(Implementation, Collector)) {
+            collector: anytype,
+            comptime options: RepeatOptions,
+            add_to_collection: *const fn (ctx: @TypeOf(collector), ResultType) anyerror!void,
+        ) ParserCombinator(RepeatTo(Implementation, @TypeOf(collector), options)) {
+            RepeatOptions.validate(options);
             return .{
                 .implementation = .{
                     .underlying = self.implementation,
@@ -768,6 +824,21 @@ pub fn ParserCombinator(comptime Implementation: type) type {
                     .addFn = add_to_collection,
                 },
             };
+        }
+
+        test repeatTo {
+            var map = std.AutoHashMap(u8, u8).init(std.testing.allocator);
+            defer map.deinit();
+            //
+            const p = anyChar().andThen(anyChar()).repeatTo(&map, .{}, struct {
+                fn put(container: *std.AutoHashMap(u8, u8), values: struct { u8, u8 }) anyerror!void {
+                    try container.put(values[0], values[1]);
+                }
+            }.put);
+            //
+            const result = (try p.parseString("1a2b")).?;
+            try std.testing.expectEqual('a', result.get('1'));
+            try std.testing.expectEqual('b', result.get('2'));
         }
 
         /// Wraps the self parser in a new one that applies the function `f` to the parsing result and
@@ -816,75 +887,58 @@ pub fn Either(comptime A: type, B: type) type {
     return union(enum) { left: A, right: B };
 }
 
+/// Describes how the parser should be repeated.
+/// By default, it may be repeated zero times or continue until a failure occurs.
+/// If the `max_count` is provided, the parser will stop after parsing `max_count` items.
+/// If the `min_count` is provided, and the count of parsing items less than `min_count`, the parser fails.
+/// Note, the `min_count` must be less or equal to `max_count`.
+pub const RepeatOptions = struct {
+    /// The minimum count of items required for successful parsing (inclusive).
+    min_count: usize = 0,
+    /// The maximum count of items (inclusive).
+    max_count: ?usize = null,
+
+    pub fn validate(comptime self: RepeatOptions) void {
+        if (self.max_count) |max_count| {
+            if (self.min_count > max_count)
+                @compileError(std.fmt.comptimePrint(
+                    "The minimum count must be less or equal to the maximum count. {any}",
+                    .{self},
+                ));
+            if (max_count == 0)
+                @compileError(std.fmt.comptimePrint(
+                    "The maximum count must be greater than zero. {any}",
+                    .{self},
+                ));
+        }
+    }
+
+    /// Returns true if no more item should be parsed
+    pub inline fn isEnough(self: RepeatOptions, count: usize) bool {
+        if (self.max_count) |max_count| {
+            return count >= max_count;
+        }
+        return false;
+    }
+};
+
 /// An input for parsers. It can be tin wrapper around the whole input string,
 /// or behave as a buffered reader.
 const Input = struct {
     const BufferedInput = struct {
-        /// The allocator that used to manage buffer.
-        /// It must be defined if the reader is defined.
-        alloc: std.mem.Allocator,
         /// The reader of the original input
         /// It must be defined if the allocator is defined.
         reader: std.io.AnyReader,
         /// Inner buffer of the input
-        buffer: []u8,
-        /// The total capacity of the buffer
-        capacity: usize = 0,
+        buffer: std.ArrayList(u8),
 
         fn init(alloc: std.mem.Allocator, reader: std.io.AnyReader) !BufferedInput {
-            var buffer = try alloc.alloc(u8, init_size);
-            buffer.len = 0;
-            return .{ .alloc = alloc, .buffer = buffer, .capacity = init_size, .reader = reader };
+            return .{ .buffer = std.ArrayList(u8).init(alloc), .reader = reader };
         }
 
-        /// Frees memory of the buffer if it was allocated inside self instance
+        /// Frees memory of the buffer
         fn deinit(self: BufferedInput) void {
-            self.alloc.free(self.buffer[0..self.capacity]);
-        }
-
-        fn append(self: *BufferedInput, item: u8) !void {
-            const new_len = self.buffer.len + 1;
-            try self.ensureCapacity(new_len);
-            self.len += 1;
-            self.buffer[self.buffer.len - 1] = item;
-        }
-
-        fn appendSlice(self: *BufferedInput, slice: []const u8) !void {
-            const old_len = self.buffer.len;
-            const new_len = self.buffer.len + slice.len;
-            try self.ensureCapacity(new_len);
-            self.buffer.len = new_len;
-            @memcpy(self.buffer[old_len..][0..self.buffer.len], slice);
-        }
-
-        fn ensureCapacity(self: *BufferedInput, new_capacity: usize) !void {
-            if (self.capacity > new_capacity) return;
-
-            const better_capacity = growCapacity(self.capacity, new_capacity);
-
-            if (self.capacity > new_capacity) return;
-
-            // copied from std.array_list.zig
-            const old_memory = self.buffer.ptr[0..self.capacity];
-            if (self.alloc.resize(old_memory, better_capacity)) {
-                self.capacity = better_capacity;
-            } else {
-                const new_memory = try self.alloc.alloc(u8, better_capacity);
-                @memcpy(new_memory[0..self.buffer.len], self.buffer);
-                self.alloc.free(old_memory);
-                self.buffer.ptr = new_memory.ptr;
-                self.capacity = new_memory.len;
-            }
-        }
-
-        // copied from std.array_list.zig
-        fn growCapacity(current: usize, minimum: usize) usize {
-            var new = current;
-            while (true) {
-                new +|= new / 2 + 8;
-                if (new >= minimum)
-                    return new;
-            }
+            self.buffer.deinit();
         }
     };
 
@@ -939,10 +993,10 @@ const Input = struct {
                 var buf: [read_bytes_count]u8 = undefined;
                 const len = try input.reader.read(&buf);
                 if (len > 0) {
-                    try input.appendSlice(buf[0..len]);
-                    std.debug.assert(self.idx < input.buffer.len - 1);
+                    try input.buffer.appendSlice(buf[0..len]);
+                    std.debug.assert(self.idx < input.buffer.items.len - 1);
                     self.idx += 1;
-                    return input.buffer[self.idx - 1];
+                    return input.buffer.items[self.idx - 1];
                 } else {
                     return null;
                 }
@@ -953,7 +1007,7 @@ const Input = struct {
     fn format(self: Input, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         const buffer: []const u8 = switch (self.impl) {
             .string_wrapper => |wrapper| wrapper.input_string,
-            .buffered => |input| input.buffer,
+            .buffered => |input| input.buffer.items,
         };
         if (self.idx < buffer.len) {
             const left_bound = if (self.idx == 0) 0 else @min(self.idx - 1, buffer.len - 1);
@@ -1064,25 +1118,37 @@ fn Const(comptime Underlying: type, comptime template: Underlying.ResultType) ty
     };
 }
 
-fn Slice(comptime Underlying: type) type {
+fn Slice(comptime Underlying: type, options: RepeatOptions) type {
     return struct {
         const Self = @This();
 
         pub const ResultType = []Underlying.ResultType;
 
+        const init_size = if (options.max_count) |value| value else 10;
+
         underlying: Underlying,
         alloc: std.mem.Allocator,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            var buffer: ResultType = try self.alloc.alloc(Underlying.ResultType, 5);
-            var i: usize = 0;
-            while (try self.underlying.parse(input)) |t| : (i += 1) {
-                if (i == buffer.len) {
-                    buffer = try self.alloc.realloc(buffer, newSize(buffer.len));
+            const orig_idx = input.idx;
+            var slice: ResultType = try self.alloc.alloc(Underlying.ResultType, init_size);
+            var count: usize = 0;
+            while (!options.isEnough(count)) : (count += 1) {
+                if (try self.underlying.parse(input)) |t| {
+                    if (count == slice.len) {
+                        slice = try self.alloc.realloc(slice, newSize(slice.len));
+                    }
+                    slice[count] = t;
+                } else {
+                    break;
                 }
-                buffer[i] = t;
             }
-            return try self.alloc.realloc(buffer, i);
+            if (count < options.min_count) {
+                input.idx = orig_idx;
+                self.alloc.free(slice);
+                return null;
+            }
+            return try self.alloc.realloc(slice, count);
         }
 
         fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -1095,7 +1161,28 @@ fn Slice(comptime Underlying: type) type {
     };
 }
 
-fn Array(comptime Underlying: type, count: u8) type {
+fn Array(comptime Underlying: type, options: anytype) type {
+    const info = @typeInfo(@TypeOf(options));
+    switch (info) {
+        .Int, .ComptimeInt => return ArrayExactly(Underlying, options),
+        .Struct => {
+            RepeatOptions.validate(options);
+            if (@as(RepeatOptions, options).max_count) |capacity| {
+                return ArrayRange(Underlying, options.min_count, capacity);
+            } else {
+                @compileError("You have to provide or exact count or max count of expected items in array.");
+            }
+        },
+        else => @compileError(
+            std.fmt.comptimePrint(
+                "Wrong options {any} for repeating parser. You should specify the exact number of expected items or provide the RepeatOptions structure.",
+                .{info},
+            ),
+        ),
+    }
+}
+
+fn ArrayExactly(comptime Underlying: type, count: u8) type {
     return struct {
         const Self = @This();
 
@@ -1123,59 +1210,111 @@ fn Array(comptime Underlying: type, count: u8) type {
     };
 }
 
-fn SentinelArray(comptime Underlying: type, min_count: u8, max_count: u8) type {
-    std.debug.assert(max_count > 0);
+fn ArrayRange(comptime Underlying: type, min_count: usize, capacity: usize) type {
     return struct {
         const Self = @This();
 
-        pub const ResultType = [max_count:0]Underlying.ResultType;
+        pub const ResultType = struct { items: [capacity]Underlying.ResultType, count: usize };
 
         underlying: Underlying,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
             const orig_idx = input.idx;
-            var result: ResultType = undefined;
-            var i: usize = 0;
-            while (i < max_count) : (i += 1) {
+            var count: usize = 0;
+            var items: [capacity]Underlying.ResultType = undefined;
+            while (count < capacity) {
                 if (try self.underlying.parse(input)) |t| {
-                    result[i] = t;
+                    items[count] = t;
+                    count += 1;
                 } else {
                     break;
                 }
             }
-            if (i < min_count) {
+            if (count < min_count) {
                 input.idx = orig_idx;
                 return null;
+            } else {
+                return .{ .items = items, .count = count };
             }
-            result[i] = 0;
-            return result;
         }
 
         fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.print("<SentinelArray of {s}>", .{self.underlying});
+            try writer.print("<Array of {s}>", .{self.underlying});
         }
     };
 }
 
-fn Collect(comptime Underlying: type, Collector: type) type {
+fn SentinelArray(comptime Underlying: type, options: RepeatOptions) type {
     return struct {
         const Self = @This();
 
-        pub const ResultType = *Collector;
+        const capacity = if (options.max_count) |value|
+            value
+        else
+            @compileError("You must specify the maximum count of expected items in the array.");
+
+        pub const ResultType = [capacity:0]Underlying.ResultType;
 
         underlying: Underlying,
-        collector: *Collector,
-        addFn: *const fn (ctx: *Collector, Underlying.ResultType) anyerror!void,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            while (try self.underlying.parse(input)) |t| {
-                try self.addFn(self.collector, t);
+            const orig_idx = input.idx;
+            var count: usize = 0;
+            var items: ResultType = undefined;
+            while (!options.isEnough(count)) {
+                if (try self.underlying.parse(input)) |t| {
+                    items[count] = t;
+                    count += 1;
+                } else {
+                    break;
+                }
             }
-            return self.collector;
+            if (count < options.min_count) {
+                input.idx = orig_idx;
+                return null;
+            } else {
+                items[count] = 0;
+                return items;
+            }
         }
 
         fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.print("<Collect {any} to {any}>", .{ @typeName(Collector), self.underlying });
+            try writer.print("<SentinelArray of {s} {any}>", .{ self.underlying, options });
+        }
+    };
+}
+
+fn RepeatTo(comptime Underlying: type, Collector: type, options: RepeatOptions) type {
+    return struct {
+        const Self = @This();
+
+        pub const ResultType = Collector;
+
+        underlying: Underlying,
+        collector: Collector,
+        addFn: *const fn (ctx: Collector, Underlying.ResultType) anyerror!void,
+
+        fn parse(self: Self, input: *Input) anyerror!?ResultType {
+            const orig_idx = input.idx;
+            var count: usize = 0;
+            while (!options.isEnough(count)) {
+                if (try self.underlying.parse(input)) |t| {
+                    try self.addFn(self.collector, t);
+                    count += 1;
+                } else {
+                    break;
+                }
+            }
+            if (count < options.min_count) {
+                input.idx = orig_idx;
+                return null;
+            } else {
+                return self.collector;
+            }
+        }
+
+        fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<Collect {any} {any} to {any}>", .{ options, @typeName(Collector), self.underlying });
         }
     };
 }
@@ -1520,7 +1659,7 @@ test "parse a long sequence to slice" {
     for (0..sequence.len) |i| {
         sequence[i] = 'a';
     }
-    const p = char('a').repeat(std.testing.allocator);
+    const p = char('a').repeat(std.testing.allocator, .{});
     // when:
     const result = (try p.parseString(&sequence)).?;
     defer std.testing.allocator.free(result);

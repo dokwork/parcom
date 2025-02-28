@@ -82,7 +82,7 @@ fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
 
     // we can't use Parsers.int to parse numbers here to avoid consumption of the '-' and '+'
     // number: Int <- \d+
-    const number = p.range('0', '9').repeatToSentinelArray(1, 10)
+    const number = p.range('0', '9').repeatToSentinelArray(.{ .min_count = 1, .max_count = 10 })
         .transform(Value, {}, fns.parseInt);
 
     // value: Int <- <number>|<brackets>
@@ -92,14 +92,14 @@ fn expr(alloc: std.mem.Allocator) !p.TaggedParser(Value) {
     // product: Int <- <value>([*/]<value>)*
     const product = blk: {
         const operation = p.oneCharOf("*/").transform(Operation, {}, Operation.parse);
-        break :blk value.andThen(operation.andThen(value).repeat(alloc))
+        break :blk value.andThen(operation.andThen(value).repeat(alloc, .{}))
             .transform(Value, alloc, fns.calculate);
     };
 
     // sum: Int <- <product>([+-]<product>)*
     const sum = blk: {
         const operation = p.oneCharOf("+-").transform(Operation, {}, Operation.parse);
-        break :blk product.andThen(operation.andThen(product).repeat(alloc))
+        break :blk product.andThen(operation.andThen(product).repeat(alloc, .{}))
             .transform(Value, alloc, fns.calculate);
     };
 
