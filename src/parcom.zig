@@ -342,7 +342,7 @@ test deferred {
 /// ```zig
 /// test {
 ///     var p = char('a');
-///     const tg: TaggedParser(u8) = try p.tagged();
+///     const tg: TaggedParser(u8) = p.tagged();
 ///     defer tg.deinit();
 ///     try std.testing.expectEqual('a', try tg.parseString("a"));
 /// }
@@ -389,12 +389,16 @@ pub fn TaggedParser(comptime TaggedType: type) type {
             var input = Input.string(str);
             return self.parse(&input);
         }
+
+        pub fn combinator(self: Self) ParserCombinator(Self) {
+            return .{ .implementation = self };
+        }
     };
 }
 
 test TaggedParser {
     var p = char('a');
-    const tg: TaggedParser(u8) = try p.tagged();
+    const tg: TaggedParser(u8) = p.tagged();
     defer tg.deinit();
 
     try std.testing.expectEqual('a', try tg.parseString("a"));
@@ -440,7 +444,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
         /// Wraps the self parser into a tagged version, allowing the type of the underlying parser
         /// to be erased. Be cautious with the lifetime of the self parser. In most cases, the
         /// `taggedAllocated` method is safer.
-        pub fn tagged(self: *Self) !TaggedParser(ResultType) {
+        pub fn tagged(self: *Self) TaggedParser(ResultType) {
             const fns = struct {
                 fn parse(ptr: *const anyopaque, input: *Input) anyerror!?ResultType {
                     const s: *const Self = @ptrCast(@alignCast(ptr));
@@ -595,6 +599,37 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(Either(u8, u8){ .left = 'a' }, try p.parseString("a"));
             try std.testing.expectEqual(Either(u8, u8){ .right = 'b' }, try p.parseString("b"));
             try std.testing.expectEqual(null, try p.parseString("c"));
+        }
+
+        /// Explicitly sets the expected result type for parser. It can help solve type inference
+        /// in some cases. Example:
+        /// ```zig
+        ///    const T = struct { u8, u8 };
+        ///    var p = char('a').andThen(char('b')).coerce(T);
+        ///    const tp: TaggedParser(T) = p.tagged();
+        /// ```
+        pub fn coerce(
+            self: Self,
+            comptime ExpectedResultType: type,
+        ) ParserCombinator(Coerce(Implementation, ExpectedResultType)) {
+            return .{ .implementation = .{ .underlying = self.implementation } };
+        }
+
+        test coerce {
+            // This can't be compiled:
+            // ```
+            // var p = char('a').andThen(char('b'));
+            // const tp: TaggedParser(struct { u8, u8 }) = p.tagged();
+            // ```
+            // Compilation error (approximately):
+            // > expected type 'parcom.TaggedParser(parcom.test.coerce__struct_6193)',
+            // > found 'parcom.TaggedParser(parcom.AndThen(...,97),...,98)).ResultType)'
+            //
+            // But this is ok:
+            const T = struct { u8, u8 };
+            var p = char('a').andThen(char('b')).coerce(T);
+            const tp: TaggedParser(T) = p.tagged();
+            _ = tp;
         }
 
         /// Wraps the self parser in a new one that returns `Either{ .right: void }` when the underlying fails.
@@ -874,8 +909,9 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(42, try p.parseString("42"));
         }
 
-        /// Create a parser that writes to the log with passed scope and debug level
-        /// the result of running the underlying parser.
+        /// Create a parser that writes the result of running the underlying
+        /// parser to the log with passed scope and debug level.
+        /// _Note: do not forget to add `std.testing.log_level = .debug;` to your test._
         pub fn debug(self: Self, comptime scope: @Type(.EnumLiteral)) ParserCombinator(Logged(Self, scope)) {
             return .{ .implementation = Logged(Self, scope){ .underlying = self } };
         }
@@ -925,6 +961,8 @@ pub const RepeatOptions = struct {
 /// An input for parsers. It can be tin wrapper around the whole input string,
 /// or behave as a buffered reader.
 const Input = struct {
+    const Error = error{ResetImposible};
+
     const BufferedInput = struct {
         /// The reader of the original input
         /// It must be defined if the allocator is defined.
@@ -949,13 +987,21 @@ const Input = struct {
         buffered: BufferedInput,
     };
 
-    /// The initial size of the buffer
+    /// The initial size of the buffer.
     const init_size = 5;
     /// The count of bytes to read from the reader at once;
     const read_bytes_count = 128;
 
-    /// An index of the element in the buffer that should be parsed next
-    idx: usize = 0,
+    /// An index of the element in the input that should be parsed next.
+    /// This index includes the count of committed items.
+    pos: usize = 0,
+    /// An index of the element in the buffer from which the parsing has been started,
+    /// and to which the parsing should rollback in case of fail.
+    original_pos: usize = 0,
+    /// A count of items from the beginning of the input that can't be parsed again.
+    /// For the buffered input it equals to the total count of cropped items.
+    committed_count: usize = 0,
+    /// The current implementation of the input.
     impl: Implementation,
 
     /// Builds buffered input for parsers
@@ -966,6 +1012,36 @@ const Input = struct {
     /// Builds a wrapper around the string as the input for parsers
     fn string(str: []const u8) Input {
         return .{ .impl = .{ .string_wrapper = .{ .input_string = str } } };
+    }
+
+    /// Persists the current position to make it possible to reset back to it.
+    /// This method must be invoked before parsing the input.
+    fn startParsing(self: *Input) void {
+        self.original_pos = self.pos;
+    }
+
+    /// Resets the current position back to the value persisted at
+    /// `startParsing`.
+    /// Returns `ResetImposible` error if the input was cut during the parsing
+    /// and rolling back to the original position is impossible.
+    fn reset(self: *Input) Error!void {
+        if (self.original_pos == 0 or self.original_pos > self.committed_count) {
+            self.pos = self.original_pos;
+        } else {
+            log.warn("The parser was failed after cut at {}", .{self.*});
+            return Error.ResetImposible;
+        }
+    }
+
+    /// For the buffered input this method drops all accumulated items till the current position;
+    /// For the string input this method marks all items before the current position as unreachable.
+    fn cut(self: *Input) void {
+        self.committed_count = self.pos;
+        if (self.impl == .buffered) {
+            self.impl.buffered.buffer.shrinkRetainingCapacity(
+                self.impl.buffered.buffer.items.len - self.committed_count,
+            );
+        }
     }
 
     /// Reads one byte from the input and increases the `idx` by one.
@@ -982,21 +1058,22 @@ const Input = struct {
     fn read(self: *Input) !?u8 {
         switch (self.impl) {
             .string_wrapper => |wrapper| {
-                if (self.idx >= wrapper.input_string.len) {
+                if (self.pos >= wrapper.input_string.len) {
                     return null;
                 } else {
-                    self.idx += 1;
-                    return wrapper.input_string[self.idx - 1];
+                    self.pos += 1;
+                    return wrapper.input_string[self.pos - 1];
                 }
             },
             .buffered => |*input| {
                 var buf: [read_bytes_count]u8 = undefined;
                 const len = try input.reader.read(&buf);
                 if (len > 0) {
+                    const idx = self.pos - self.committed_count;
                     try input.buffer.appendSlice(buf[0..len]);
-                    std.debug.assert(self.idx < input.buffer.items.len - 1);
-                    self.idx += 1;
-                    return input.buffer.items[self.idx - 1];
+                    std.debug.assert(idx < input.buffer.items.len - 1);
+                    self.pos += 1;
+                    return input.buffer.items[idx];
                 } else {
                     return null;
                 }
@@ -1005,25 +1082,25 @@ const Input = struct {
     }
 
     fn format(self: Input, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        const buffer: []const u8 = switch (self.impl) {
-            .string_wrapper => |wrapper| wrapper.input_string,
-            .buffered => |input| input.buffer.items,
+        const buffer: []const u8, const idx: usize = switch (self.impl) {
+            .string_wrapper => |wrapper| .{ wrapper.input_string, self.pos },
+            .buffered => |input| .{ input.buffer.items, self.pos - self.committed_count },
         };
-        if (self.idx < buffer.len) {
-            const left_bound = if (self.idx == 0) 0 else @min(self.idx - 1, buffer.len - 1);
-            const right_bound = @min(self.idx + 1, buffer.len - 1);
-            const symbol = switch (buffer[self.idx]) {
+        if (idx < buffer.len) {
+            const left_bound = if (idx == 0) 0 else @min(idx - 1, buffer.len - 1);
+            const right_bound = @min(idx + 1, buffer.len - 1);
+            const symbol = switch (buffer[idx]) {
                 '\n' => "\\n",
                 '\r' => "\\r",
                 '\t' => "\\t",
-                else => &[_]u8{buffer[self.idx]},
+                else => &[_]u8{buffer[idx]},
             };
             try writer.print(
                 "position {d}:\n{s}[{s}]{s}",
-                .{ self.idx, buffer[0..left_bound], symbol, buffer[right_bound..] },
+                .{ self.pos, buffer[0..left_bound], symbol, buffer[right_bound..] },
             );
         } else {
-            try writer.print("position {d}:\n{s}[]", .{ self.idx, buffer });
+            try writer.print("position {d}:\n{s}[]", .{ self.pos, buffer });
         }
     }
 };
@@ -1058,6 +1135,23 @@ fn Failed(comptime T: type) type {
     };
 }
 
+const End = struct {
+    pub const ResultType = void;
+
+    pub fn parse(_: End, input: *Input) anyerror!?void {
+        if (try input.read()) |_| {
+            input.pos -= 1;
+            return null;
+        } else {
+            return;
+        }
+    }
+
+    fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.writeAll("<End of input>");
+    }
+};
+
 const AnyChar = struct {
     pub const ResultType = u8;
 
@@ -1081,11 +1175,11 @@ fn Conditional(comptime Label: []const u8, Underlying: type, Context: type) type
         conditionFn: *const fn (ctx: Context, value: ResultType) bool,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             if (try self.underlying.parse(input)) |res| {
                 if (self.conditionFn(self.context, res)) return res;
             }
-            input.idx = orig_idx;
+            try input.reset();
             return null;
         }
 
@@ -1104,11 +1198,11 @@ fn Const(comptime Underlying: type, comptime template: Underlying.ResultType) ty
         underlying: Underlying,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             if (try self.underlying.parse(input)) |res| {
                 if (res == template) return res;
             }
-            input.idx = orig_idx;
+            try input.reset();
             return null;
         }
 
@@ -1130,8 +1224,9 @@ fn Slice(comptime Underlying: type, options: RepeatOptions) type {
         alloc: std.mem.Allocator,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var slice: ResultType = try self.alloc.alloc(Underlying.ResultType, init_size);
+            errdefer self.alloc.free(slice);
             var count: usize = 0;
             while (!options.isEnough(count)) : (count += 1) {
                 if (try self.underlying.parse(input)) |t| {
@@ -1144,8 +1239,8 @@ fn Slice(comptime Underlying: type, options: RepeatOptions) type {
                 }
             }
             if (count < options.min_count) {
-                input.idx = orig_idx;
                 self.alloc.free(slice);
+                try input.reset();
                 return null;
             }
             return try self.alloc.realloc(slice, count);
@@ -1191,13 +1286,13 @@ fn ArrayExactly(comptime Underlying: type, count: u8) type {
         underlying: Underlying,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var result: ResultType = undefined;
             for (0..count) |i| {
                 if (try self.underlying.parse(input)) |t| {
                     result[i] = t;
                 } else {
-                    input.idx = orig_idx;
+                    try input.reset();
                     return null;
                 }
             }
@@ -1219,7 +1314,7 @@ fn ArrayRange(comptime Underlying: type, min_count: usize, capacity: usize) type
         underlying: Underlying,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var count: usize = 0;
             var items: [capacity]Underlying.ResultType = undefined;
             while (count < capacity) {
@@ -1231,7 +1326,7 @@ fn ArrayRange(comptime Underlying: type, min_count: usize, capacity: usize) type
                 }
             }
             if (count < min_count) {
-                input.idx = orig_idx;
+                try input.reset();
                 return null;
             } else {
                 return .{ .items = items, .count = count };
@@ -1258,7 +1353,7 @@ fn SentinelArray(comptime Underlying: type, options: RepeatOptions) type {
         underlying: Underlying,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var count: usize = 0;
             var items: ResultType = undefined;
             while (!options.isEnough(count)) {
@@ -1270,7 +1365,7 @@ fn SentinelArray(comptime Underlying: type, options: RepeatOptions) type {
                 }
             }
             if (count < options.min_count) {
-                input.idx = orig_idx;
+                try input.reset();
                 return null;
             } else {
                 items[count] = 0;
@@ -1295,7 +1390,7 @@ fn RepeatTo(comptime Underlying: type, Collector: type, options: RepeatOptions) 
         addFn: *const fn (ctx: Collector, Underlying.ResultType) anyerror!void,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var count: usize = 0;
             while (!options.isEnough(count)) {
                 if (try self.underlying.parse(input)) |t| {
@@ -1306,7 +1401,7 @@ fn RepeatTo(comptime Underlying: type, Collector: type, options: RepeatOptions) 
                 }
             }
             if (count < options.min_count) {
-                input.idx = orig_idx;
+                try input.reset();
                 return null;
             } else {
                 return self.collector;
@@ -1329,16 +1424,16 @@ fn AndThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
         right: UnderlyingRight,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             if (try self.left.parse(input)) |l| {
                 if (try self.right.parse(input)) |r| {
                     return .{ l, r };
                 } else {
-                    input.idx = orig_idx;
+                    try input.reset();
                     return null;
                 }
             } else {
-                input.idx = orig_idx;
+                try input.reset();
                 return null;
             }
         }
@@ -1401,15 +1496,15 @@ fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
         right: UnderlyingRight,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             if (try self.left.parse(input)) |a| {
                 return .{ .left = a };
             }
-            input.idx = orig_idx;
+            try input.reset();
             if (try self.right.parse(input)) |b| {
                 return .{ .right = b };
             }
-            input.idx = orig_idx;
+            try input.reset();
             return null;
         }
 
@@ -1456,13 +1551,13 @@ fn Tuple(comptime Underlyings: type) type {
         parsers: Underlyings,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var result: ResultType = undefined;
             inline for (0..size) |i| {
                 if (try self.parsers[i].parse(input)) |v| {
                     result[i] = v;
                 } else {
-                    input.idx = orig_idx;
+                    try input.reset();
                     return null;
                 }
             }
@@ -1490,16 +1585,16 @@ fn OneCharOf(comptime chars: []const u8) type {
         };
 
         fn parse(_: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             while (try parser.parse(input)) |ch| {
                 if (std.sort.binarySearch(u8, ch, &sorted_chars, {}, compareChars)) |_| {
                     return ch;
                 } else {
-                    input.idx = orig_idx;
+                    try input.reset();
                     return null;
                 }
             }
-            input.idx = orig_idx;
+            try input.reset();
             return null;
         }
 
@@ -1527,11 +1622,11 @@ fn Transform(comptime UnderlyingA: type, Context: type, B: type) type {
         transformFn: *const fn (ctx: Context, a: UnderlyingA.ResultType) anyerror!B,
 
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             if (try self.underlying.parse(input)) |a| {
                 return try self.transformFn(self.context, a);
             }
-            input.idx = orig_idx;
+            try input.reset();
             return null;
         }
 
@@ -1548,7 +1643,7 @@ fn Int(comptime T: type, max_buf_size: usize) type {
         const Self = @This();
 
         fn parse(_: Self, input: *Input) anyerror!?ResultType {
-            const orig_idx = input.idx;
+            input.startParsing();
             var buf: [max_buf_size]u8 = undefined;
             var idx: usize = 0;
             const sign = OneCharOf("+-"){};
@@ -1561,7 +1656,7 @@ fn Int(comptime T: type, max_buf_size: usize) type {
                 buf[idx] = s;
             }
             return std.fmt.parseInt(T, buf[0..idx], 0) catch {
-                input.idx = orig_idx;
+                try input.reset();
                 return null;
             };
         }
@@ -1622,22 +1717,50 @@ fn Logged(comptime Underlying: type, scope: @Type(.EnumLiteral)) type {
     };
 }
 
-const End = struct {
-    pub const ResultType = void;
-
-    pub fn parse(_: End, input: *Input) anyerror!?void {
-        if (try input.read()) |_| {
-            input.idx -= 1;
-            return null;
-        } else {
-            return;
+fn Coerce(comptime Underlying: type, ExpectedResultType: type) type {
+    comptime {
+        if (!std.meta.eql(@typeInfo(Underlying.ResultType), @typeInfo(ExpectedResultType))) {
+            @compileError(std.fmt.comptimePrint(
+                "Type {s} can't be cast to {s}",
+                .{ @typeName(Underlying.ResultType), @typeName(ExpectedResultType) },
+            ));
         }
     }
+    return struct {
+        pub const ResultType = ExpectedResultType;
 
-    fn format(_: AnyChar, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.writeAll("<End of input>");
-    }
-};
+        const Self = @This();
+
+        underlying: Underlying,
+
+        fn parse(self: Self, input: *Input) !?ResultType {
+            if (try self.underlying.parse(input)) |v| {
+                return @as(ExpectedResultType, v);
+            } else {
+                return null;
+            }
+        }
+    };
+}
+
+fn Cut(comptime Underlying: type) type {
+    return struct {
+        pub const ResultType = Underlying.ResultType;
+
+        const Self = @This();
+
+        underlying: Underlying,
+
+        fn parse(self: Self, input: *Input) !?ResultType {
+            if (try self.underlying.parse(input)) |v| {
+                input.cut();
+                return v;
+            } else {
+                return null;
+            }
+        }
+    };
+}
 
 test {
     std.testing.refAllDecls(@This());
