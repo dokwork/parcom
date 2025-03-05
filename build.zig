@@ -50,7 +50,7 @@ pub fn build(b: *std.Build) void {
 
     // ----- Examples -----
 
-    inline for ([_][]const u8{ "expression" }) |example| {
+    inline for ([_][]const u8{ "expression", "json" }) |example| {
         const example_source = std.fmt.comptimePrint("examples/{s}.zig", .{example});
         const exe = b.addExecutable(.{
             .name = example,

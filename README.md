@@ -14,3 +14,4 @@ Documentation: [https://dokwork.github.io/parcom/index.html](https://dokwork.git
 
 Examples:
  - [The parser of a math expression](examples/expression.zig)
+ - [The json parser](examples/json.zig)

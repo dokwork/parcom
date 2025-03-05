@@ -3,7 +3,7 @@
 //! and no spaces.
 //!
 //! This example can be run with expression at first argument:
-//! ```
+//! ```sh
 //! zig build expression -- "1+1"
 //! ```
 const std = @import("std");
@@ -124,12 +124,17 @@ test "3+6*9-(5+4)*2+(6/2)" {
     try std.testing.expectEqual(42, try evaluate(std.testing.allocator, "3+6*9-(5+4)*2+(6/2)"));
 }
 
+pub const std_options: std.Options = .{
+    .log_level = .debug,
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer if (gpa.deinit() == .leak) @panic("MEMORY LEAK DETECTED!");
     const alloc = gpa.allocator();
 
-    var args = std.process.args();
+    var args = try std.process.argsWithAllocator(alloc);
+    defer args.deinit();
     // skip the path to the program
     _ = args.next();
 
