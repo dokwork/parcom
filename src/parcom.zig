@@ -36,7 +36,7 @@ const log = std.log.scoped(.parcom);
 /// Creates a parser that doesn't read any bytes from the input,
 /// and always returns passed value as the result.
 pub fn successfull(result: anytype) ParserCombinator(Successfull(@TypeOf(result))) {
-    return .{ .underlying = .{ .result = result } };
+    return .{ .implementation = .{ .result = result } };
 }
 
 /// Creates a parser that fails if the input buffer contains not handled items, or otherwise
@@ -115,7 +115,7 @@ test oneCharOf {
 /// Example:
 /// ```zig
 /// test {
-///     const p = int(i8);
+///     const p = int(i8, 5);
 ///     const alloc = std.testing.allocator;
 ///     try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
 ///     try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
@@ -125,12 +125,12 @@ test oneCharOf {
 ///     try std.testing.expectEqual(10, try p.parseString(alloc, "0XA"));
 /// }
 /// ```
-pub inline fn int(comptime T: type) ParserCombinator(Int(T, 128)) {
+pub inline fn int(comptime T: type, max_length: usize) ParserCombinator(Int(T, max_length)) {
     return .{ .implementation = .{} };
 }
 
 test int {
-    const p = int(i8);
+    const p = int(i8, 5);
     try std.testing.expectEqual(2, try p.parseString("2"));
     try std.testing.expectEqual(2, try p.parseString("+2"));
     try std.testing.expectEqual(-2, try p.parseString("-2"));
@@ -145,7 +145,7 @@ test int {
 /// Example:
 /// ```zig
 /// test {
-///     const p = float(f16);
+///     const p = float(f16, 10);
 ///     try std.testing.expectEqual(0.0, try p.parseString("0"));
 ///     try std.testing.expectEqual(0.0, try p.parseString("+0"));
 ///     try std.testing.expectEqual(0.0, try p.parseString("-0"));
@@ -155,12 +155,12 @@ test int {
 ///     try std.testing.expect(try p.parseString("NaN") != null);
 /// }
 /// ```
-pub inline fn float(comptime T: type) ParserCombinator(Float(T, 128)) {
+pub inline fn float(comptime T: type, max_length: usize) ParserCombinator(Float(T, max_length)) {
     return .{ .implementation = .{} };
 }
 
 test float {
-    const p = float(f16);
+    const p = float(f16, 10);
     try std.testing.expectEqual(0.0, try p.parseString("0"));
     try std.testing.expectEqual(0.0, try p.parseString("+0"));
     try std.testing.expectEqual(0.0, try p.parseString("-0"));
@@ -383,7 +383,7 @@ test deferred {
         // for simplicity of the example
         fn reversedList(accumulator: *std.ArrayList(u8)) !TaggedParser(void) {
             const nil = word("Nil");
-            const cons = tuple(.{ char('('), int(u8), deferred(void, accumulator, reversedList), char(')') });
+            const cons = tuple(.{ char('('), int(u8, 10), deferred(void, accumulator, reversedList), char(')') });
             const list = cons.orElse(nil);
             var parser = list.transform(void, accumulator, struct {
                 fn append(acc: *std.ArrayList(u8), value: @TypeOf(list).ResultType) !void {
@@ -754,7 +754,7 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             self: Self,
             context: anytype,
             condition: *const fn (ctx: @TypeOf(context), value: @TypeOf(self).ResultType) bool,
-        ) ParserCombinator(Conditional("Such that", @TypeOf(self), @TypeOf(context))) {
+        ) ParserCombinator(Conditional("Such that", Implementation, @TypeOf(context))) {
             return .{
                 .implementation = .{
                     .underlying = self.implementation,
@@ -1001,6 +1001,18 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             try std.testing.expectEqual(42, try p.parseString("42"));
         }
 
+        pub fn as(
+            self: Self,
+            new_value: anytype,
+        ) ParserCombinator(RightThen(Implementation, Successfull(@TypeOf(new_value)))) {
+            return self.rightThen(successfull(new_value));
+        }
+
+        test as {
+            const p = word("true").as(true);
+            try std.testing.expectEqual(true, try p.parseString("true"));
+        }
+
         /// Create a parser that writes the result of running the underlying
         /// parser to the log with passed scope and debug level.
         /// _Note: do not forget to add `std.testing.log_level = .debug;` to your test._
@@ -1012,7 +1024,19 @@ pub fn ParserCombinator(comptime Implementation: type) type {
 
 /// Alias for `union(enum) { left: A, right: B }`
 pub fn Either(comptime A: type, B: type) type {
-    return union(enum) { left: A, right: B };
+    return union(enum) {
+        left: A,
+        right: B,
+
+        /// Returns the left or right value from the `Either` with the same type of both options.
+        /// This function has a signature appropriate to using in the `transform` combinator.
+        pub fn get(_: void, value: Either(A, A)) anyerror!A {
+            return switch (value) {
+                .left => |v| v,
+                .right => |v| v,
+            };
+        }
+    };
 }
 
 /// Alias of `union(enum) { some: A, none }`
@@ -1797,7 +1821,7 @@ fn Float(comptime T: type, max_buf_size: usize) type {
         fn parse(_: Self, input: *Input) anyerror!?ResultType {
             const orig = input.position;
             // we have to handle sign at the start explicitly to prevent consuming it in case of `inf`
-            const numbers = oneCharOf("+-").optional().andThen(oneCharOf("+-0123456789_e.").repeatToSentinelArray(
+            const numbers = oneCharOf("+-").optional().andThen(oneCharOf("+-0123456789_eE.").repeatToSentinelArray(
                 .{ .min_count = 1, .max_count = max_buf_size },
             )).transform(T, {}, struct {
                 fn toFloat(_: void, value: struct { Optional(u8), [max_buf_size:0]u8 }) !T {
@@ -1959,7 +1983,7 @@ test {
 }
 
 test "more cases for int parser" {
-    const p = int(i8);
+    const p = int(i8, 10);
     try std.testing.expectEqual(null, try p.parseString("+"));
     try std.testing.expectEqual(null, try p.parseString("+-2"));
     try std.testing.expectEqual(2, try p.parseString("0002"));
@@ -1971,7 +1995,8 @@ test "more cases for int parser" {
 test "more cases for float parser" {
     const epsilon = 1e-7;
     const Z = std.meta.Int(.unsigned, @typeInfo(f16).Float.bits);
-    const p = float(f16);
+    const p = float(f16, 128);
+    try std.testing.expectEqual(1234, try p.parseString("1.234E3"));
     try std.testing.expectEqual(@as(Z, @bitCast(std.math.nan(f16))), @as(Z, @bitCast((try p.parseString("nAn")).?)));
     try std.testing.expectEqual(std.math.inf(f16), try p.parseString("+inf"));
     try std.testing.expectEqual(
