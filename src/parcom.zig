@@ -109,9 +109,9 @@ test oneCharOf {
     try std.testing.expectEqual(null, try p.parseString("c"));
 }
 
-/// Creates a parser that reads bytes from the input into the buffer as long as they
-/// are in the chars set "+-0123456789_boXABCDF". Then it attempts to parse
-/// the buffer as an integer using `std.fmt.parseInt`.
+/// Creates a parser that reads bytes from the input into the buffer as long as they are in the
+/// chars set "+-0123456789_boXABCDF". Then it attempts to parse the buffer as an integer using
+/// `std.fmt.parseInt`.
 /// Example:
 /// ```zig
 /// test {
@@ -137,6 +137,37 @@ test int {
     try std.testing.expectEqual(2, try p.parseString("0b10"));
     try std.testing.expectEqual(8, try p.parseString("0o10"));
     try std.testing.expectEqual(10, try p.parseString("0XA"));
+}
+
+/// Creates a parser that reads bytes from the input into the buffer as long as they are in the
+/// chars set "+-0123456789_e.", or the case insensitive words "nan" or "inf".
+/// Then it attempts to parse the buffer as a float using `std.fmt.parseFloat`.
+/// Example:
+/// ```zig
+/// test {
+///     const p = float(f16);
+///     try std.testing.expectEqual(0.0, try p.parseString("0"));
+///     try std.testing.expectEqual(0.0, try p.parseString("+0"));
+///     try std.testing.expectEqual(0.0, try p.parseString("-0"));
+///     try std.testing.expectEqual(1234, try p.parseString("1.234e3"));
+///     try std.testing.expectEqual(std.math.inf(f16), try p.parseString("Inf"));
+///     try std.testing.expectEqual(-std.math.inf(f16), try p.parseString("-inf"));
+///     try std.testing.expect(try p.parseString("NaN") != null);
+/// }
+/// ```
+pub inline fn float(comptime T: type) ParserCombinator(Float(T, 128)) {
+    return .{ .implementation = .{} };
+}
+
+test float {
+    const p = float(f16);
+    try std.testing.expectEqual(0.0, try p.parseString("0"));
+    try std.testing.expectEqual(0.0, try p.parseString("+0"));
+    try std.testing.expectEqual(0.0, try p.parseString("-0"));
+    try std.testing.expectEqual(1234, try p.parseString("1.234e3"));
+    try std.testing.expectEqual(std.math.inf(f16), try p.parseString("Inf"));
+    try std.testing.expectEqual(-std.math.inf(f16), try p.parseString("-inf"));
+    try std.testing.expect(try p.parseString("NaN") != null);
 }
 
 /// Creates a parser that processes a char from the chars set ['a'..'z', 'A'..'Z', '0'..'9'].
@@ -173,11 +204,13 @@ test letterOrNumber {
     try std.testing.expectEqual(null, try p.parseString("-"));
 }
 
-/// Creates a parser that processes only passed sequence of chars.
+/// Creates a parser that processes only passed sequence of chars in the same order.
 /// Example:
 /// ```zig
 /// test {
 ///     try std.testing.expectEqualStrings("foo", &((try word("foo").parseString("foo")).?));
+///     try std.testing.expectEqual(null, try word("foo").parseString("Foo"));
+///     try std.testing.expectEqual(null, try word("foo").parseString("oof"));
 /// }
 /// ```
 pub inline fn word(comptime W: []const u8) ParserCombinator(
@@ -198,6 +231,40 @@ pub inline fn word(comptime W: []const u8) ParserCombinator(
 
 test word {
     try std.testing.expectEqualStrings("foo", &((try word("foo").parseString("foo")).?));
+    try std.testing.expectEqual(null, try word("foo").parseString("Foo"));
+    try std.testing.expectEqual(null, try word("foo").parseString("oof"));
+}
+
+/// Creates a parser that processes only passed sequence of chars in the same order, but ignores
+/// case.
+/// Example:
+/// ```zig
+/// test {
+///    try std.testing.expectEqualStrings("foo", &(try wORD("foo").parseString("foo")).?);
+///    try std.testing.expectEqualStrings("Foo", &(try wORD("foo").parseString("Foo")).?);
+///    try std.testing.expectEqual(null, try wORD("foo").parseString("oof"));
+/// }
+/// ```
+pub inline fn wORD(comptime W: []const u8) ParserCombinator(
+    Conditional(WordLabel(W), ArrayExactly(AnyChar, W.len), []const u8),
+) {
+    return .{
+        .implementation = .{
+            .underlying = ArrayExactly(AnyChar, W.len){ .underlying = AnyChar{} },
+            .context = W,
+            .conditionFn = struct {
+                fn compareWords(expected: []const u8, parsed: [W.len]u8) bool {
+                    return std.ascii.eqlIgnoreCase(expected, &parsed);
+                }
+            }.compareWords,
+        },
+    };
+}
+
+test wORD {
+    try std.testing.expectEqualStrings("foo", &(try wORD("foo").parseString("foo")).?);
+    try std.testing.expectEqualStrings("Foo", &(try wORD("foo").parseString("Foo")).?);
+    try std.testing.expectEqual(null, try wORD("foo").parseString("oof"));
 }
 
 /// Creates a parser that processes characters within the ASCII range, where From is the lowest
@@ -659,28 +726,26 @@ pub fn ParserCombinator(comptime Implementation: type) type {
             _ = tp;
         }
 
-        /// Wraps the self parser in a new one that returns `Either{ .right: void }` when the underlying fails.
-        /// Example:
+        /// Wraps the self parser in a new one that returns `Optional(self.ResultType).some` when
+        /// the underlying parser successful, or `Optional(self.ResultType).none` when the
+        /// underlying fails. Example:
         /// ```zig
         /// test {
         ///     const p = char('a').optional();
-        ///     try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, p.parseString("a"));
-        ///     try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString("b"));
+        ///     try std.testing.expectEqual(Optional(u8){ .some = 'a' }, p.parseString("a"));
+        ///     try std.testing.expectEqual(.none, p.parseString("b"));
         /// }
         /// ```
-        pub fn optional(self: Self) ParserCombinator(OrElse(Implementation, Successfull(void))) {
+        pub fn optional(self: Self) ParserCombinator(Opt(Implementation)) {
             return .{
-                .implementation = OrElse(Implementation, Successfull(void)){
-                    .left = self.implementation,
-                    .right = Successfull(void){ .result = {} },
-                },
+                .implementation = Opt(Implementation){ .underlying = self.implementation },
             };
         }
 
         test optional {
             const p = char('a').optional();
-            try std.testing.expectEqual(Either(u8, void){ .left = 'a' }, p.parseString("a"));
-            try std.testing.expectEqual(Either(u8, void){ .right = {} }, p.parseString("b"));
+            try std.testing.expectEqual(Optional(u8){ .some = 'a' }, p.parseString("a"));
+            try std.testing.expectEqual(.none, p.parseString("b"));
         }
 
         /// Wraps the self parser in a new one that applies the `condition` function to the result of
@@ -948,6 +1013,11 @@ pub fn ParserCombinator(comptime Implementation: type) type {
 /// Alias for `union(enum) { left: A, right: B }`
 pub fn Either(comptime A: type, B: type) type {
     return union(enum) { left: A, right: B };
+}
+
+/// Alias of `union(enum) { some: A, none }`
+pub fn Optional(comptime A: type) type {
+    return union(enum) { some: A, none };
 }
 
 /// Describes how the parser should be repeated.
@@ -1511,6 +1581,29 @@ fn RightThen(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
     };
 }
 
+fn Opt(comptime Underlying: type) type {
+    return struct {
+        pub const ResultType = Optional(Underlying.ResultType);
+
+        const Self = @This();
+
+        underlying: Underlying,
+
+        fn parse(self: Self, input: *Input) anyerror!?ResultType {
+            const orig = input.position;
+            if (try self.underlying.parse(input)) |a| {
+                return .{ .some = a };
+            }
+            try input.reset(orig);
+            return .none;
+        }
+
+        pub fn format(self: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.print("<Optional {any}>", .{self.underlying});
+        }
+    };
+}
+
 fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
     return struct {
         pub const ResultType = Either(UnderlyingLeft.ResultType, UnderlyingRight.ResultType);
@@ -1680,14 +1773,87 @@ fn Int(comptime T: type, max_buf_size: usize) type {
             while (try symbols.parse(input)) |s| : (idx += 1) {
                 buf[idx] = s;
             }
-            return std.fmt.parseInt(T, buf[0..idx], 0) catch {
-                try input.reset(orig);
-                return null;
+            return std.fmt.parseInt(T, buf[0..idx], 0) catch |e| switch (e) {
+                error.InvalidCharacter => {
+                    try input.reset(orig);
+                    return null;
+                },
+                else => return e,
             };
         }
 
         pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll("<Integer>");
+        }
+    };
+}
+
+fn Float(comptime T: type, max_buf_size: usize) type {
+    return struct {
+        pub const ResultType = T;
+
+        const Self = @This();
+
+        fn parse(_: Self, input: *Input) anyerror!?ResultType {
+            const orig = input.position;
+            // we have to handle sign at the start explicitly to prevent consuming it in case of `inf`
+            const numbers = oneCharOf("+-").optional().andThen(oneCharOf("+-0123456789_e.").repeatToSentinelArray(
+                .{ .min_count = 1, .max_count = max_buf_size },
+            )).transform(T, {}, struct {
+                fn toFloat(_: void, value: struct { Optional(u8), [max_buf_size:0]u8 }) !T {
+                    const isNegative = switch (value[0]) {
+                        .some => |sign| sign == '-',
+                        else => false,
+                    };
+                    // const ptr = @as([*:0]u8, &value[1]);
+                    const len = std.mem.indexOfSentinel(u8, 0, &value[1]);
+                    const result = try std.fmt.parseFloat(T, value[1][0..len]);
+                    return if (isNegative) -result else result;
+                }
+            }.toFloat);
+            const nan = wORD("nan").transform(T, {}, struct {
+                fn toFloat(_: void, value: [3]u8) !T {
+                    return try std.fmt.parseFloat(T, &value);
+                }
+            }.toFloat);
+            const inf = oneCharOf("+-").optional().andThen(wORD("inf")).transform(T, {}, struct {
+                fn toFloat(_: void, value: struct { Optional(u8), [3]u8 }) !T {
+                    var buf: [4]u8 = undefined;
+                    var pad: usize = 0;
+                    switch (value[0]) {
+                        .some => |sign| {
+                            buf[pad] = sign;
+                            pad = 1;
+                        },
+                        .none => {},
+                    }
+                    const len = 3 + pad;
+                    @memcpy(buf[pad..len], &value[1]);
+                    return std.fmt.parseFloat(T, buf[0..len]);
+                }
+            }.toFloat);
+            const flt = numbers.orElse(inf).orElse(nan).transform(T, {}, struct {
+                fn get(_: void, value: Either(Either(T, T), T)) !T {
+                    switch (value) {
+                        .left => switch (value.left) {
+                            .left => |v| return v,
+                            .right => |v| return v,
+                        },
+                        .right => |v| return v,
+                    }
+                }
+            }.get);
+            return flt.parse(input) catch |e| switch (e) {
+                error.InvalidCharacter => {
+                    try input.reset(orig);
+                    return null;
+                },
+                else => return e,
+            };
+        }
+
+        pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.writeAll("<Float>");
         }
     };
 }
@@ -1800,6 +1966,26 @@ test "more cases for int parser" {
     try std.testing.expectEqual(2, try p.parseString("0_0_0_2"));
     try std.testing.expectEqual(2, try p.parseString("+0b10"));
     try std.testing.expectEqual(-2, try p.parseString("-0b10"));
+}
+
+test "more cases for float parser" {
+    const epsilon = 1e-7;
+    const Z = std.meta.Int(.unsigned, @typeInfo(f16).Float.bits);
+    const p = float(f16);
+    try std.testing.expectEqual(@as(Z, @bitCast(std.math.nan(f16))), @as(Z, @bitCast((try p.parseString("nAn")).?)));
+    try std.testing.expectEqual(std.math.inf(f16), try p.parseString("+inf"));
+    try std.testing.expectEqual(
+        std.math.inf(f16),
+        try p.parseString("0.4e0066999999999999999999999999999999999999999999999999999"),
+    );
+    try std.testing.expect(
+        std.math.approxEqAbs(
+            f16,
+            (try p.parseString("0_1_2_3_4_5_6.7_8_9_0_0_0e0_0_1_0")).?,
+            @as(f16, 123456.789000e10),
+            epsilon,
+        ),
+    );
 }
 
 test "parse a long sequence to slice" {
