@@ -1052,19 +1052,31 @@ pub const RepeatOptions = struct {
     /// The maximum count of items (inclusive).
     max_count: ?usize = null,
 
-    pub fn validate(comptime self: RepeatOptions) void {
-        if (self.max_count) |max_count| {
-            if (self.min_count > max_count)
+    pub fn validate(comptime options: anytype) void {
+        const max_count: ?usize = maxCount(options);
+        if (max_count) |max| {
+            if (options.min_count > max)
                 @compileError(std.fmt.comptimePrint(
                     "The minimum count must be less or equal to the maximum count. {any}",
-                    .{self},
+                    .{options},
                 ));
-            if (max_count == 0)
+            if (max == 0)
                 @compileError(std.fmt.comptimePrint(
                     "The maximum count must be greater than zero. {any}",
-                    .{self},
+                    .{options},
                 ));
         }
+    }
+
+    inline fn maxCount(comptime options: anytype) ?usize {
+        return switch (@typeInfo(@TypeOf(options.max_count))) {
+            .comptime_int => options.max_count,
+            .optional => options.max_count,
+            else => @compileError(std.fmt.comptimePrint(
+                "Wrong type of max_count. Expected ?usize, but found {s}",
+                .{@typeName(options.max_count)},
+            )),
+        };
     }
 
     /// Returns true if no more item should be parsed
@@ -1083,7 +1095,7 @@ pub const RepeatOptions = struct {
 /// The name of the parser that used in logged messages can be very verbose.
 /// To override it by some custom value set the `label` property.
 pub const LogOptions = struct {
-    scope: @Type(.EnumLiteral),
+    scope: @Type(.enum_literal),
     log_level: std.log.Level = .debug,
     label: ?[]const u8 = null,
 };
@@ -1440,10 +1452,10 @@ fn Slice(comptime Underlying: type, options: RepeatOptions) type {
 fn Array(comptime Underlying: type, options: anytype) type {
     const info = @typeInfo(@TypeOf(options));
     switch (info) {
-        .Int, .ComptimeInt => return ArrayExactly(Underlying, options),
-        .Struct => {
+        .int, .comptime_int => return ArrayExactly(Underlying, options),
+        .@"struct" => {
             RepeatOptions.validate(options);
-            if (@as(RepeatOptions, options).max_count) |capacity| {
+            if (RepeatOptions.maxCount(options)) |capacity| {
                 return ArrayRange(Underlying, options.min_count, capacity);
             } else {
                 @compileError("You have to provide or exact count or max count of expected items in array.");
@@ -1742,7 +1754,7 @@ fn OrElse(comptime UnderlyingLeft: type, UnderlyingRight: type) type {
 
 fn Tuple(comptime Underlyings: type) type {
     const struct_info: std.builtin.Type.Struct = switch (@typeInfo(Underlyings)) {
-        .Struct => |s| s,
+        .@"struct" => |s| s,
         else => @compileError(std.fmt.comptimePrint(
             "Parsers should be struct with parsers but it is {any}.",
             .{@typeInfo(Underlyings)},
@@ -1758,13 +1770,13 @@ fn Tuple(comptime Underlyings: type) type {
                 types[i] = .{
                     .name = field.name,
                     .type = field.type.ResultType,
-                    .default_value = null,
+                    .default_value_ptr = null,
                     .is_comptime = false,
                     .alignment = 0,
                 };
             }
             break :blk @Type(.{
-                .Struct = .{
+                .@"struct" = .{
                     .layout = .auto,
                     .fields = &types,
                     .decls = &[_]std.builtin.Type.Declaration{},
@@ -1813,7 +1825,7 @@ fn OneCharOf(comptime chars: []const u8) type {
         fn parse(_: Self, input: *Input) anyerror!?ResultType {
             const orig = input.position;
             while (try parser.parse(input)) |ch| {
-                if (std.sort.binarySearch(u8, ch, &sorted_chars, {}, compareChars)) |_| {
+                if (std.sort.binarySearch(u8, &sorted_chars, ch, compareChars)) |_| {
                     return ch;
                 } else {
                     try input.reset(orig);
@@ -1827,7 +1839,7 @@ fn OneCharOf(comptime chars: []const u8) type {
         fn lessThan(_: void, lhs: u8, rhs: u8) bool {
             return lhs < rhs;
         }
-        fn compareChars(_: void, lhs: u8, rhs: u8) std.math.Order {
+        fn compareChars(lhs: u8, rhs: u8) std.math.Order {
             return std.math.order(lhs, rhs);
         }
 
@@ -2089,7 +2101,7 @@ test "more cases for int parser" {
 
 test "more cases for float parser" {
     const epsilon = 1e-7;
-    const Z = std.meta.Int(.unsigned, @typeInfo(f16).Float.bits);
+    const Z = std.meta.Int(.unsigned, @typeInfo(f16).float.bits);
     const p = float(f16, 128);
     try std.testing.expectEqual(1234, try p.parseString("1.234E3"));
     try std.testing.expectEqual(@as(Z, @bitCast(std.math.nan(f16))), @as(Z, @bitCast((try p.parseString("nAn")).?)));

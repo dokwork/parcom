@@ -105,10 +105,10 @@ fn JsonParser(comptime TargetType: type) type {
 const spaces = p.oneCharOf(" \t\n\r").skip(.{});
 inline fn sep(comptime char: u8) @TypeOf(spaces.rightThen(p.char(char)).leftThen(spaces).cut()) {
     return spaces.rightThen(p.char(char)).leftThen(spaces)
-    // This is the most important part of this example.
-    // It crops the buffer of input every time, when a separator and spaces around it are parsed.
-    // The main idea here is if you meet, for example, '{' and doesn't parse the whole object
-    // successfully, you shouldn't try to use another parser, because the input is obviously broken.
+        // This is the most important part of this example.
+        // It crops the buffer of input every time, when a separator and spaces around it are parsed.
+        // The main idea here is if you meet, for example, '{' and doesn't parse the whole object
+        // successfully, you shouldn't try to use another parser, because the input is obviously broken.
         .cut();
 }
 

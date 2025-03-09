@@ -1,12 +1,10 @@
 # parcom
 
 [![parcom ci](https://github.com/dokwork/parcom/actions/workflows/ci.yml/badge.svg)](https://github.com/dokwork/parcom/actions/workflows/ci.yml)
+![zig version](https://img.shields.io/badge/zig%20version-0.14.0-fcca77)
 
 > [!WARNING]  
 > This library is underdeveloped. API is not stable.
-
-> [!IMPORTANT]
-> Required version of zig is 0.13.0
 
 Parser combinators for Zig. 
 

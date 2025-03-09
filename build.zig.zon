@@ -1,12 +1,13 @@
 .{
-    .name = "parcom",
-    .version = "0.2.0",
-
-    .dependencies = .{},
+    .name = .parcom,
+    .version = "0.3.0",
+    .minimum_zig_version = "0.14.0",
 
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
     },
+
+    .fingerprint = 0x4473857c7c30cf1e,
 }
