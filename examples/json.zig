@@ -1,15 +1,15 @@
 //! This is a simple implementation of a JSON parser. While it isn't fully correct, it demonstrates
-//! the flexibility of `parcom` and serves as a proof of concept for optimization through input
-//! truncation.
+//! the flexibility of the `parcom` library and serves as a proof of concept for optimization through
+//! the input truncation.
 //!
 //! This example can be run to parse json from the stdin:
 //! ```sh
 //! echo '{ "hello" : "world" }' | zig build json
 //! ```
 //! By default, the result of parsing is ignored.
-//! To print the parsed json to stdout use `-o` argument. In that case this example will
-//! parse the stdin, build AST for parsed input, serialize that AST back to string format,
-//! and print it to the stdout:
+//! To print the parsed json to stdout use `-o` argument. In that case the stdin will be parsed,
+//! and AST for parsed input built. Then this AST will be serialized back to the string, and printed
+//! to the stdout:
 //! ```sh
 //! echo '{ "hello" : "world" }' | zig build json -- -o
 //! > { "hello": "world" }
