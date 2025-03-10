@@ -23,10 +23,27 @@
 //! This library provides an implementation of the parser combinators.
 //!
 //! Three different types of parser implementations exist:
-//! 1.  The inner parser implementations, which contain the logic for parsing the input.
-//! 2.  The public wrapper `ParserCombinator`, which provides methods to combine parsers and create new ones.
-//! 3.  The public wrapper `TaggedParser`, which erase the type of the underlying parser in `ParserCombinator`,
-//!     allowing for explicit type declaration in the code.
+//!
+//!  - The base parser implementations contain the logic for parsing input and serve
+//!    as the fundamental building blocks;
+//!  - The `ParserCombinator`provides methods to combine parsers and create new ones;
+//!  - The `TaggedParser` erases the type of the underlying parser and simplifies
+//!    the parser's type declaration.
+//!
+//! Every parser provides the type of the parsing result as a constant `ResultType:
+//! type`.
+//!
+//! `Parcom` offers two options for consuming data:
+//!  - parse the entire input string at once,
+//!  - or consume and parse byte by byte from `AnyReader`.
+//!
+//! When the input is a reader, `parcom` works as a buffered reader. It reads few
+//! bytes to the buffer and then parse them.
+//!
+//! The result of parsing by any parser can be a value of type `ResultType` in successful
+//! case, or `null` if parsing was failed. In successful case not whole input can be
+//! consumed. If you have to be sure, that every byte was consumed and parsed, use the
+//! `end()` parser explicitly.
 //!
 //! Github page: [https://github.com/dokwork/parcom](https://github.com/dokwork/parcom)
 const std = @import("std");
@@ -42,6 +59,9 @@ pub fn successfull(result: anytype) ParserCombinator(Successfull(@TypeOf(result)
 /// Creates a parser that fails if the input buffer contains not handled items, or otherwise
 /// tries to consume one byte from the input, and completes successfully if `EndOfStream`
 /// happened. It similar to '$' in regexp.
+///
+/// `ResultType: void`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -59,6 +79,9 @@ test end {
 }
 
 /// Creates a parser that reads one byte from the input, and returns it as the result.
+///
+/// `ResultType: u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -77,6 +100,9 @@ test anyChar {
 
 /// Creates a parser that reads one byte from the input, and returns `C` as the
 /// result if the same byte was read.
+///
+/// `ResultType: u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -97,6 +123,18 @@ test char {
 
 /// Creates a parser that reads one byte from the input and returns it as the result
 /// if it is present in the chars set.
+///
+/// `ResultType: u8`
+///
+/// Example:
+/// ```zig
+/// test {
+///     const p = oneCharOf("ab");
+///     try std.testing.expectEqual('a', try p.parseString("a"));
+///     try std.testing.expectEqual('b', try p.parseString("b"));
+///     try std.testing.expectEqual(null, try p.parseString("c"));
+/// }
+/// ```
 pub inline fn oneCharOf(comptime chars: []const u8) ParserCombinator(OneCharOf(chars)) {
     return .{ .parser = .{} };
 }
@@ -112,10 +150,14 @@ test oneCharOf {
 /// Creates a parser that reads bytes from the input into the buffer as long as they are in the
 /// chars set "+-0123456789_boXABCDF". Then it attempts to parse the buffer as an integer using
 /// `std.fmt.parseInt`.
+///
+/// `ResultType: T`
+///
 /// Example:
 /// ```zig
 /// test {
-///     const p = int(i8, 5);
+///     const T = i8;
+///     const p = int(T, 5);
 ///     const alloc = std.testing.allocator;
 ///     try std.testing.expectEqual(2, try p.parseString(alloc, "2"));
 ///     try std.testing.expectEqual(2, try p.parseString(alloc, "+2"));
@@ -130,7 +172,8 @@ pub inline fn int(comptime T: type, max_length: usize) ParserCombinator(Int(T, m
 }
 
 test int {
-    const p = int(i8, 5);
+    const T = i8;
+    const p = int(T, 5);
     try std.testing.expectEqual(2, try p.parseString("2"));
     try std.testing.expectEqual(2, try p.parseString("+2"));
     try std.testing.expectEqual(-2, try p.parseString("-2"));
@@ -142,17 +185,21 @@ test int {
 /// Creates a parser that reads bytes from the input into the buffer as long as they are in the
 /// chars set "+-0123456789_e.", or the case insensitive words "nan" or "inf".
 /// Then it attempts to parse the buffer as a float using `std.fmt.parseFloat`.
+///
+/// `ResultType: T`
+///
 /// Example:
 /// ```zig
 /// test {
-///     const p = float(f16, 10);
-///     try std.testing.expectEqual(0.0, try p.parseString("0"));
-///     try std.testing.expectEqual(0.0, try p.parseString("+0"));
-///     try std.testing.expectEqual(0.0, try p.parseString("-0"));
-///     try std.testing.expectEqual(1234, try p.parseString("1.234e3"));
-///     try std.testing.expectEqual(std.math.inf(f16), try p.parseString("Inf"));
-///     try std.testing.expectEqual(-std.math.inf(f16), try p.parseString("-inf"));
-///     try std.testing.expect(try p.parseString("NaN") != null);
+///    const T = f16;
+///    const p = float(T, 10);
+///    try std.testing.expectEqual(0.0, try p.parseString("0"));
+///    try std.testing.expectEqual(0.0, try p.parseString("+0"));
+///    try std.testing.expectEqual(0.0, try p.parseString("-0"));
+///    try std.testing.expectEqual(1234, try p.parseString("1.234e3"));
+///    try std.testing.expectEqual(std.math.inf(T), try p.parseString("Inf"));
+///    try std.testing.expectEqual(-std.math.inf(T), try p.parseString("-inf"));
+///    try std.testing.expect(try p.parseString("NaN") != null);
 /// }
 /// ```
 pub inline fn float(comptime T: type, max_length: usize) ParserCombinator(Float(T, max_length)) {
@@ -160,17 +207,21 @@ pub inline fn float(comptime T: type, max_length: usize) ParserCombinator(Float(
 }
 
 test float {
-    const p = float(f16, 10);
+    const T = f16;
+    const p = float(T, 10);
     try std.testing.expectEqual(0.0, try p.parseString("0"));
     try std.testing.expectEqual(0.0, try p.parseString("+0"));
     try std.testing.expectEqual(0.0, try p.parseString("-0"));
     try std.testing.expectEqual(1234, try p.parseString("1.234e3"));
-    try std.testing.expectEqual(std.math.inf(f16), try p.parseString("Inf"));
-    try std.testing.expectEqual(-std.math.inf(f16), try p.parseString("-inf"));
+    try std.testing.expectEqual(std.math.inf(T), try p.parseString("Inf"));
+    try std.testing.expectEqual(-std.math.inf(T), try p.parseString("-inf"));
     try std.testing.expect(try p.parseString("NaN") != null);
 }
 
 /// Creates a parser that processes a char from the chars set ['a'..'z', 'A'..'Z', '0'..'9'].
+///
+/// `ResultType: u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -205,6 +256,9 @@ test letterOrNumber {
 }
 
 /// Creates a parser that processes only passed sequence of chars in the same order.
+///
+/// `ResultType: []const u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -237,6 +291,9 @@ test word {
 
 /// Creates a parser that processes only passed sequence of chars in the same order, but ignores
 /// case.
+///
+/// `ResultType: []const u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -269,6 +326,9 @@ test wORD {
 
 /// Creates a parser that processes characters within the ASCII range, where From is the lowest
 /// character in the ASCII table and To is the highest, inclusive.
+///
+/// `ResultType: u8`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -310,6 +370,9 @@ test range {
 
 /// Creates a parser that sequentially applies all passed parsers, and returns a tuple of
 /// all results.
+///
+/// `ResultType: struct { ... }`
+///
 /// Example:
 /// ```zig
 /// test {
@@ -328,7 +391,11 @@ test tuple {
 
 /// Creates a parser that invokes the function `f` to create a tagged parser, which will be used
 /// to parse the input. That tagged parser will be deinited at the end of parsing if the destructor is provided
-/// (parser was create by the `taggedAllocated` method.
+/// (parser was create by the `taggedAllocated` method).
+///
+/// `ResultType: T`
+///
+/// Example:
 /// ```zig
 /// test {
 ///    var result = std.ArrayList(u8).init(std.testing.allocator);
@@ -362,12 +429,12 @@ test tuple {
 ///}
 /// ```
 pub inline fn deferred(
-    comptime ResultType: type,
+    comptime T: type,
     context: anytype,
-    f: *const fn (context: @TypeOf(context)) anyerror!TaggedParser(ResultType),
-) ParserCombinator(Deffered(@TypeOf(context), ResultType)) {
+    f: *const fn (context: @TypeOf(context)) anyerror!TaggedParser(T),
+) ParserCombinator(Deffered(@TypeOf(context), T)) {
     return .{
-        .parser = Deffered(@TypeOf(context), ResultType){ .context = context, .buildParserFn = f },
+        .parser = Deffered(@TypeOf(context), T){ .context = context, .buildParserFn = f },
     };
 }
 
@@ -549,6 +616,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         ///  Combines self parser with other to create a new parser that applies both underlying parsers
         ///  to the input, producing a tuple of results from each.
+        ///
+        /// `ResultType: struct{ Self.ResultType, Self.ResultType }`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -574,6 +644,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         ///  Combines self parser with other to create a new parser that
         ///  applies both underlying parsers to the input, producing a result from the self parser.
+        ///
+        /// `ResultType: Self.ResultType`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -603,6 +676,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         ///  Combines self parser with other to create a new parser that
         ///  applies both underlying parsers to the input, producing a result from the other parser.
+        ///
+        /// `ResultType: @TypeOf(other.parser).ResultType`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -634,6 +710,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
         ///  parser, and if it was unsuccessful, applies the other. It returns tagged union with
         ///  `.left` value for the result from the self parser, or the `.right` value for the result
         ///  from the other parser.
+        ///
+        /// `ResultType: parcom.Either(Self.ResultType, @TypeOf(other.parser).ResultType)`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -659,7 +738,11 @@ pub fn ParserCombinator(comptime Parser: type) type {
         }
 
         /// Drops all items from the input buffer if the self parser was successful. It makes resetting to
-        /// items before the current position impossible. Example:
+        /// items before the current position impossible.
+        ///
+        /// `ResultType: Self.ResultType`
+        ///
+        /// Example:
         /// ```zig
         /// test {
         ///     const p = char('a').andThen(char('?'));
@@ -686,7 +769,11 @@ pub fn ParserCombinator(comptime Parser: type) type {
         }
 
         /// Explicitly sets the expected result type for parser. It can help solve type inference
-        /// in some cases. Example:
+        /// in some cases.
+        ///
+        /// `ResultType: ExpectedResultType`
+        ///
+        /// Example:
         /// ```zig
         ///    const T = struct { u8, u8 };
         ///    var p = char('a').andThen(char('b')).coerce(T);
@@ -718,7 +805,11 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         /// Wraps the self parser in a new one that returns `Optional(self.ResultType).some` when
         /// the underlying parser successful, or `Optional(self.ResultType).none` when the
-        /// underlying fails. Example:
+        /// underlying fails.
+        ///
+        /// `ResultType: parcom.Optional(Self.ResultType)`
+        ///
+        /// Example:
         /// ```zig
         /// test {
         ///     const p = char('a').optional();
@@ -740,6 +831,22 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         /// Wraps the self parser in a new one that applies the `condition` function to the result of
         /// the underlying parser and fails if the function returns `false`.
+        ///
+        /// `ResultType: Self.ResultType`
+        ///
+        /// Example:
+        /// test {
+        ///     const p = anyChar().suchThat({}, struct {
+        ///         fn condition(_: void, ch: u8) bool {
+        ///             return switch (ch) {
+        ///                 '0' ... '9' => true,
+        ///                 else => false,
+        ///             };
+        ///         }
+        ///     }.condition);
+        ///     try std.testing.expectEqual('0', try p.parseString("0"));
+        ///     try std.testing.expectEqual(null, try p.parseString("a"));
+        /// }
         pub fn suchThat(
             self: Self,
             context: anytype,
@@ -754,6 +861,19 @@ pub fn ParserCombinator(comptime Parser: type) type {
             };
         }
 
+        test suchThat {
+            const p = anyChar().suchThat({}, struct {
+                fn condition(_: void, ch: u8) bool {
+                    return switch (ch) {
+                        '0'...'9' => true,
+                        else => false,
+                    };
+                }
+            }.condition);
+            try std.testing.expectEqual('0', try p.parseString("0"));
+            try std.testing.expectEqual(null, try p.parseString("a"));
+        }
+
         // FIXME: It triggers infinite Semantic Analysis
         // pub fn not(self: Self) ParserCombinator(Not(Implementation)) {
         //     return .{ .parser = .{ .underlying = self.parser } };
@@ -765,6 +885,18 @@ pub fn ParserCombinator(comptime Parser: type) type {
         //     try std.testing.expectEqual(null, try p.parseString("ab"));
         // }
 
+        /// Wraps the self parser in a new one that repeat the self parser and ignores the result.
+        /// Returns the count of skipped items.
+        ///
+        /// `ResultType: u64`
+        ///
+        /// Example:
+        /// ```zig
+        /// test {
+        ///     const p = char(' ').skip(.{}).andThen(char('!'));
+        ///     try std.testing.expectEqual(.{ 6, '!' }, try p.parseString("      !"));
+        /// }
+        /// ```
         pub fn skip(self: Self, comptime options: RepeatOptions) ParserCombinator(Skip(Parser, options)) {
             return .{ .parser = .{ .underlying = self.parser } };
         }
@@ -777,6 +909,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
         /// Wraps the self parser in a new one that repeat it until the underlying parser fails.
         /// All parsed results are stored in a slice allocated by the provided allocator.
         /// The returned slice must be freed using `free` method of the same allocator.
+        ///
+        /// `ResultType: []Self.ResultType`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -818,10 +953,16 @@ pub fn ParserCombinator(comptime Parser: type) type {
         /// repeated until the passed number of items will be parsed, or the underlying parser
         /// fails. If the underlying parser fails before parsing enough items, the new parser
         /// fails. Otherwise, an array containing the count items is returned.
+        ///
+        /// `ResultType: [options]Self.ResultType`
+        ///
         /// 2. `RepeatOptions` - the new parser will be repeated until the `max_count` items will be
         /// parsed, or the underlying parser fails. If the underlying parser fails before producing
         /// `min_count` results, the new parser fails. Otherwise, a tuple with an array with size
         /// `max_count` and the count of parsed items will be returned.
+        ///
+        /// `ResultType: struct{ [options.max_count]Self.ResultType, usize }`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -879,6 +1020,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
         /// produce `max_count` results. Instead, it set the sentinel element after the last
         /// parsed result to the final array. If count of parsed results is less than `min_count`, the
         /// returned parser fails.
+        ///
+        /// `ResultType: [options.max_count:0]Self.ResultType`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -930,6 +1074,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
         /// Wraps the self parser in a new one that repeat the underlying parser until it fails,
         /// or consumed `max_count` items, if that limit is specified in the provided `RepeatOptions`.
         /// It applies the function `add_to_collection` to the every parsed item.
+        ///
+        /// `ResultType: @TypeOf(collector)`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -980,6 +1127,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         /// Wraps the self parser in a new one that applies the function `f` to the parsing result and
         /// returns the value produced by the function.
+        ///
+        /// `ResultType: Result`
+        ///
         /// Example:
         /// ```zig
         /// test {
@@ -1011,6 +1161,17 @@ pub fn ParserCombinator(comptime Parser: type) type {
             try std.testing.expectEqual(42, try p.parseString("42"));
         }
 
+        /// Wraps the self parser in a new one that returns the `new_value` if the self parser is successful.
+        ///
+        /// `ResultType: @TypeOf(new_value)`
+        ///
+        /// Example:
+        /// ```zig
+        /// test {
+        ///     const p = word("true").as(true);
+        ///     try std.testing.expectEqual(true, try p.parseString("true"));
+        /// }
+        /// ```
         pub fn as(
             self: Self,
             new_value: anytype,
@@ -1025,6 +1186,9 @@ pub fn ParserCombinator(comptime Parser: type) type {
 
         /// Create a parser that writes the result of running the underlying
         /// parser to the log with passed options.
+        ///
+        /// `ResultType: Self.ResultType`
+        ///
         pub fn logged(self: Self, comptime options: LogOptions) ParserCombinator(Logged(Self, options)) {
             return .{ .parser = Logged(Self, options){ .underlying = self } };
         }
@@ -1088,14 +1252,12 @@ pub const RepeatOptions = struct {
     }
 };
 
-/// Describes how the parsing process should be logged.
-/// As minimum, the `scope` of the logger must be provided.
-/// It also possible to change the `log_level` from the default
-/// `.debug` to any other values supported by the `std.log.Level`.
-/// The name of the parser that used in logged messages can be very verbose.
-/// To override it by some custom value set the `label` property.
+/// Describes how the parsing process should be logged. You may provide the `scope` of the logger
+/// which is `.parcom` by default, or change the `log_level` from the default `.debug` to any other
+/// values supported by the `std.log.Level`. The name of the parser that used in logged messages can
+/// be very verbose. To override it by some custom value set the `label` property.
 pub const LogOptions = struct {
-    scope: @Type(.enum_literal),
+    scope: @Type(.enum_literal) = .parcom,
     log_level: std.log.Level = .debug,
     label: ?[]const u8 = null,
 };
@@ -1170,8 +1332,8 @@ const Input = struct {
     fn reset(self: *Input, to_position: usize) Error!void {
         if (self.committed_count > 0 and to_position < self.committed_count) {
             log.warn(
-                "Imposible to reset the input from {d} to {d} at {any}.\nItems already commited: {d}",
-                .{ self.position, to_position, self, self.committed_count },
+                "Imposible to reset the input from {d} to {d} at {any}.",
+                .{ self.position, to_position, self },
             );
             return Error.ResetImposible;
         }
@@ -2009,7 +2171,7 @@ fn Logged(comptime Underlying: type, comptime options: LogOptions) type {
         fn parse(self: Self, input: *Input) anyerror!?ResultType {
             writeToLog("\nThe parsing by the {any} has been started from {any}", .{ self, input });
             defer writeToLog(
-                "End parsing by the {any}. Cut {d} items during the parsing process.\n",
+                "End parsing by the {any}. Cut {d} items during the parsing process.",
                 .{ self, input.committed_count },
             );
 
