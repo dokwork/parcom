@@ -1,6 +1,7 @@
 # parcom
 
 [![parcom ci](https://github.com/dokwork/parcom/actions/workflows/ci.yml/badge.svg)](https://github.com/dokwork/parcom/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/dokwork/parcom/branch/main/graph/badge.svg?token=OP8OVU42LV)](https://codecov.io/gh/dokwork/parcom)
 ![zig version](https://img.shields.io/badge/zig%20version-0.14.0-fcca77)
 
 _Consume input, not memory._

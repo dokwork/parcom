@@ -37,11 +37,25 @@ pub fn build(b: *std.Build) void {
     ) orelse &[0][]const u8{};
 
     const parcom_tests = b.addTest(.{
-        .root_source_file = b.path("src/parcom.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = parcom,
         .filters = test_filters,
     });
+
+    // -Dtest-coverage
+    const coverage = b.option(
+        bool,
+        "test-coverage",
+        "Generate test coverage",
+    ) orelse false;
+
+    if (coverage) {
+        parcom_tests.setExecCmd(&[_]?[]const u8{
+            "kcov",
+            "--include-path=src/parcom.zig",
+            "./coverage",
+            null, // to get zig to use the --test-cmd-bin flag
+        });
+    }
 
     const run_parcom_tests = b.addRunArtifact(parcom_tests);
 
