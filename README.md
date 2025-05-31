@@ -6,21 +6,7 @@
 
 _Consume input, not memory._
 
-> [!WARNING]  
-> This library is underdeveloped. API is not stable.
-
 This library provides an implementation of the parser combinators.
-
-Three different types of parser implementations exist:
-
- - The base parser implementations contain the logic for parsing input and serve
-   as the fundamental building blocks;
- - The `ParserCombinator`provides methods to combine parsers and create new ones;
- - The `TaggedParser` erases the type of the underlying parser and simplifies
-   the parser's type declaration.
-
-Every parser provides the type of the parsing result as a constant `ResultType:
-type`.
 
 `Parcom` offers two options for consuming data:
  - parse the entire input string at once,
@@ -28,11 +14,6 @@ type`.
 
 When the input is a reader, `Parcom` works as a buffered reader. It reads few
 bytes to the buffer and then parse them.
-
-The result of parsing by any parser can be a value of type `ResultType` in successful
-case, or `null` if parsing was failed. In successful case not whole input can be
-consumed. If you have to be sure, that every byte was consumed and parsed, use the
-[`end()`](https://dokwork.github.io/parcom/index.html#parcom.end) parser explicitly.
 
 ## Installation
 
@@ -60,6 +41,14 @@ Add `Parcom` module to your `build.zig`:
     exe.root_module.addImport("parcom", parcom.module("parcom"));
 ```
 
+## Documentation
+[https://dokwork.github.io/parcom/index.html](https://dokwork.github.io/parcom/index.html)
+
+## Examples
+
+ - [The parser of a math expression](examples/expression.zig)
+ - [The json parser](examples/json.zig)
+
 ## Quick start
 
 Let's create a parser, which will parse and execute a simple math expression with follow
@@ -77,6 +66,24 @@ Expr   := evaluate(Sum)
 Our parser will be capable of parsing and evaluating mathematical expressions
 that include addition and subtraction operations, unsigned integers, and nested
 expressions within brackets.
+
+### A short API overview
+
+Three different types of parser implementations exist:
+
+ - The base parser implementations contain the logic for parsing input and serve
+   as the fundamental building blocks;
+ - The `ParserCombinator`provides methods to combine parsers and create new ones;
+ - The `TaggedParser` erases the type of the underlying parser and simplifies
+   the parser's type declaration.
+
+Every parser provides the type of the parsing result as a constant `ResultType:
+type`.
+
+The result of parsing by any parser can be a value of type `ResultType` in successful
+case, or `null` if parsing was failed. In successful case not whole input can be
+consumed. If you have to be sure, that every byte was consumed and parsed, use the
+[`end()`](https://dokwork.github.io/parcom/index.html#parcom.end) parser explicitly.
 
 ### Base parser
 
@@ -473,11 +480,3 @@ The parsing by the <EXPR> has been started from position 3:
 …[!]5+2)
 [example] (debug): End parsing by the <EXPR>. Cut 3 items during the parsing process.
 ```
-
-## Documentation
-[https://dokwork.github.io/parcom/index.html](https://dokwork.github.io/parcom/index.html)
-
-## Examples
-
- - [The parser of a math expression](examples/expression.zig)
- - [The json parser](examples/json.zig)
